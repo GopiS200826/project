@@ -17,11 +17,18 @@ from decimal import Decimal
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-in-production'
 
-# Database Configuration
-MYSQL_HOST = 'mysql.railway.internal'
-MYSQL_USER = 'root'
-MYSQL_PASSWORD = 'tPLXNLpSkMKDwkOmdASGmtXdsJVMyrVf'
-MYSQL_DB = 'railway'
+
+
+import os
+import mysql.connector
+
+db = mysql.connector.connect(
+    MYSQL_HOST=os.getenv("MYSQLHOST"),
+    MYSQL_USER=os.getenv("MYSQLUSER"),
+    MYSQL_PASSWORD=os.getenv("MYSQLPASSWORD"),
+    MYSQL_DB=os.getenv("MYSQLDATABASE"),
+    port=os.getenv("MYSQLPORT")
+)
 
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
@@ -6435,4 +6442,5 @@ if __name__ == '__main__':
     print("=" * 60)
     
     app.run(debug=True, host='0.0.0.0', port=5000)
+
 

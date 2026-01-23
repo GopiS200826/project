@@ -21,8 +21,6 @@ app.secret_key = 'your-secret-key-change-in-production'
 
 
 # Database Configuration for Railway
-import os  # Add this at the top with other imports if not present
-
 def get_db_connection():
     """Get database connection for Railway"""
     try:
@@ -115,8 +113,7 @@ def init_db():
         
         with connection.cursor() as cursor:
             # Railway automatically creates the database, just select it
-            cursor.execute(f"USE {MYSQL_DB}")
-            
+            pass            
             # Rest of your table creation code remains the same...
             
             # Users table
@@ -6486,7 +6483,8 @@ if __name__ == '__main__':
     
     # Get port from Railway environment
     port = int(os.environ.get('PORT', 5000))
-    app.run(debug=railway_env == 'development', host='0.0.0.0', port=port)
+    app.run(debug=False, host='0.0.0.0', port=port)
+
 
 
 

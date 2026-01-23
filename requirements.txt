@@ -1,6 +1,12 @@
-echo "Flask==2.3.2
+Flask==2.3.2
 Flask-SocketIO==5.3.4
 mysql-connector-python==8.1.0
 python-dotenv==1.0.0
+pymysql==1.1.0
+python-dotenv==1.0.0
 Werkzeug==2.3.6
-eventlet==0.33.3" > requirements.txt
+eventlet==0.33.3
+
+reportlab==4.0.4
+pandas==2.0.3
+openpyxl==3.1.2

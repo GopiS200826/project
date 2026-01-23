@@ -12,6 +12,8 @@ from email.mime.multipart import MIMEMultipart
 import os
 import time
 from decimal import Decimal
+import mysql.connector  # Changed from pymysql to be consistent
+from mysql.connector import Error
 
 
 app = Flask(__name__)
@@ -19,23 +21,28 @@ app.secret_key = 'your-secret-key-change-in-production'
 
 
 
-import os
-import mysql.connector
-
-db = mysql.connector.connect(
-    MYSQL_HOST=os.getenv("MYSQLHOST"),
-    MYSQL_USER=os.getenv("MYSQLUSER"),
-    MYSQL_PASSWORD=os.getenv("MYSQLPASSWORD"),
-    MYSQL_DB=os.getenv("MYSQLDATABASE"),
-    port=os.getenv("MYSQLPORT")
-)
+def get_db_connection():
+    try:
+        connection = mysql.connector.connect(
+            host=os.getenv("MYSQL_HOST", "localhost"),
+            user=os.getenv("MYSQL_USER", "root"),
+            password=os.getenv("MYSQL_PASSWORD", ""),
+            database=os.getenv("MYSQL_DATABASE", "mydatabase"),
+            port=int(os.getenv("MYSQL_PORT", 3306)),
+            charset='utf8mb4',
+            collation='utf8mb4_unicode_ci'
+        )
+        return connection
+    except Error as e:
+        print(f"Error connecting to MySQL: {e}")
+        return None
 
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
-EMAIL_USER = 'gamergopi26@gmail.com'  # Change this to your email
+EMAIL_USER = ''  # Change this to your email
 EMAIL_PASSWORD = 'Admin@123'  # Change this to your app password
-EMAIL_FROM = 'gamrgopi26@gmail.com'  # Change this to your email
+EMAIL_FROM = ''  # Change this to your email
 
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
@@ -6442,5 +6449,6 @@ if __name__ == '__main__':
     print("=" * 60)
     
     app.run(debug=True, host='0.0.0.0', port=5000)
+
 
 

@@ -23,21 +23,23 @@ app.secret_key = 'your-secret-key-change-in-production'
 # Database Configuration for Railway
 def get_db_connection():
     try:
-        # Railway uses these specific environment variables
         connection = pymysql.connect(
-            host=os.environ.get('MYSQLHOST'),
-            user=os.environ.get('MYSQLUSER'),
-            password=os.environ.get('MYSQLPASSWORD'),
-            database=os.environ.get('MYSQLDATABASE'),
-            port=int(os.environ.get('MYSQLPORT', 3306)),
+            host='mysql.railway.internal',  # or your actual host
+            user='root',                    # Your MySQL username
+            password='tPLXNLpSkMKDwkOmdASGmtXdsJVMyrVf',  # Your MySQL password
+            database='railway',             # Your database name
+            port=3306,                      # Default MySQL port
             charset='utf8mb4',
             cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True
+            autocommit=True,
+            connect_timeout=10
         )
         return connection
     except Exception as e:
-        print(f"Error connecting to MySQL on Railway: {e}")
+        print(f"Error connecting to MySQL: {e}")
+        print(f"Full error: {traceback.format_exc()}")
         return None
+
 
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
@@ -6451,6 +6453,7 @@ if __name__ == '__main__':
     print("=" * 60)
     
     app.run(debug=True, host='0.0.0.0', port=5000)
+
 
 
 

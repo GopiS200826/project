@@ -20,21 +20,23 @@ app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-in-production'
 
 
-
+# Database Configuration for Railway
 def get_db_connection():
     try:
-        connection = mysql.connector.connect(
-            host=os.getenv("MYSQL_HOST", "localhost"),
-            user=os.getenv("MYSQL_USER", "root"),
-            password=os.getenv("MYSQL_PASSWORD", ""),
-            database=os.getenv("MYSQL_DATABASE", "mydatabase"),
-            port=int(os.getenv("MYSQL_PORT", 3306)),
+        # Railway uses these specific environment variables
+        connection = pymysql.connect(
+            host=os.environ.get('MYSQLHOST'),
+            user=os.environ.get('MYSQLUSER'),
+            password=os.environ.get('MYSQLPASSWORD'),
+            database=os.environ.get('MYSQLDATABASE'),
+            port=int(os.environ.get('MYSQLPORT', 3306)),
             charset='utf8mb4',
-            collation='utf8mb4_unicode_ci'
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True
         )
         return connection
-    except Error as e:
-        print(f"Error connecting to MySQL: {e}")
+    except Exception as e:
+        print(f"Error connecting to MySQL on Railway: {e}")
         return None
 
 # Email Configuration
@@ -6449,6 +6451,7 @@ if __name__ == '__main__':
     print("=" * 60)
     
     app.run(debug=True, host='0.0.0.0', port=5000)
+
 
 
 

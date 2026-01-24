@@ -2303,16 +2303,24 @@ def edit_student_form(form_id):
                     }},
                     body: JSON.stringify({{ questions: questions }})
                 }})
-                .then(res => res.json())
+                .then(res => {{
+                    if (!res.ok) {{
+                        return res.text().then(text => {{
+                            throw new Error(`HTTP error! status: ${{res.status}}, body: ${{text}}`);
+                        }});
+                    }}
+                    return res.json();
+                }})
                 .then(data => {{
                     if (data.success) {{
                         alert('Questions saved successfully!');
                     }} else {{
-                        alert('Error saving questions');
+                        alert('Error saving questions: ' + data.error);
                     }}
                 }})
                 .catch(error => {{
-                    alert('Error: ' + error);
+                    console.error('Error:', error);
+                    alert('Error saving form. Please try again. If the problem persists, contact support.');
                 }});
             }}
             
@@ -3527,6 +3535,45 @@ def edit_form(form_id):
         print(f"Edit form error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+    
+@app.route('/api/student-form/<int:form_id>', methods=['POST'])
+@student_required
+def update_student_form(form_id):
+    try:
+        data = request.json
+        questions = data.get('questions', [])
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT title FROM forms WHERE id = %s', (form_id,))
+            form = cursor.fetchone()
+            
+            # Check if form belongs to student
+            cursor.execute('SELECT * FROM forms WHERE id = %s AND created_by = %s', (form_id, session['user_id']))
+            student_form = cursor.fetchone()
+            
+            if not student_form:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Access denied or form not found'})
+            
+            cursor.execute('UPDATE forms SET questions = %s WHERE id = %s', 
+                          (json.dumps(questions), form_id))
+            connection.commit()
+        connection.close()
+        
+        # Create notification for saving form
+        create_notification(
+            user_id=session['user_id'],
+            title='Student Form Saved',
+            message=f'Your student form "{form["title"]}" has been saved successfully.',
+            type='success',
+            link=f'/student-form/{form_id}/edit'
+        )
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"Update student form error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
     
 @app.route('/api/form/<int:form_id>', methods=['POST'])
 @login_required

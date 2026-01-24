@@ -12,25 +12,18 @@ from email.mime.multipart import MIMEMultipart
 import os
 import time
 from decimal import Decimal
-import mysql.connector  # Changed from pymysql to be consistent
+import mysql.connector
 from mysql.connector import Error
 from dotenv import load_dotenv
 
-
-app = Flask(__name__)
-app.secret_key = 'your-secret-key-change-in-production'
-
-
-# Database Configuration for Railway
-
-
-# Load environment variables
+# Load environment variables first
 load_dotenv()
 
+# Create Flask app once
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
 
-# Database Configuration
+# Database Configuration for Railway
 MYSQL_HOST = os.environ.get('MYSQLHOST', 'mysql.railway.internal')
 MYSQL_USER = os.environ.get('MYSQLUSER', 'root')
 MYSQL_PASSWORD = os.environ.get('MYSQLPASSWORD', 'tPLXNLpSkMKDwkOmdASGmtXdsJVMyrVf')
@@ -47,7 +40,7 @@ EMAIL_FROM = os.environ.get('EMAIL_FROM', '')
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = os.environ.get('ENABLE_EMAIL_NOTIFICATIONS', 'False').lower() == 'true'
 
-# Default Admin Credentials (change in production)
+# Default Admin Credentials
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@example.com')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
 ADMIN_NAME = os.environ.get('ADMIN_NAME', 'System Administrator')
@@ -69,8 +62,9 @@ def get_db():
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=True,
             connect_timeout=10,
-            ssl={'ssl': {'ca': '/etc/ssl/certs/ca-certificates.crt'}}  # Railway SSL
+            ssl={'ssl': {'ca': '/etc/ssl/certs/ca-certificates.crt'}} if os.environ.get('RAILWAY_ENVIRONMENT') else None
         )
+        print("✓ Connected to database with SSL")
         return connection
     except Exception as e:
         print(f"SSL connection failed, trying without SSL: {e}")
@@ -92,8 +86,6 @@ def get_db():
         except Exception as e2:
             print(f"❌ Database connection failed: {e2}")
             return None
-
-# Remove the old get_db() function completely (lines 76-85)
 
 
 # Email Configuration
@@ -6512,7 +6504,6 @@ def not_found(e):
 def server_error(e):
     return html_wrapper('500', '<div class="alert alert-danger">Server error</div>', get_navbar(), ''), 500
 
-
 if __name__ == '__main__':
     print("=" * 60)
     print("FORM SYSTEM STARTING...")
@@ -6523,13 +6514,6 @@ if __name__ == '__main__':
     
     if not db_success:
         print("⚠️ Database initialization had issues, but continuing...")
-    
- 
-    
- 
-    
-    
-    
     
     print("\n✓ Key Features Implemented:")
     print("  1. Department-based form segregation")
@@ -6557,30 +6541,20 @@ if __name__ == '__main__':
     print("  - Teacher: Limited to their department, full functionality")
     print("  - Student: Limited to their department, can request/respond to forms")
     
-    print("\nStarting server...")
-    print("Access at: http://localhost:5000")
-    print("Admin Test: http://localhost:5000/admin/test")
-    print("Teacher Analytics: http://localhost:5000/teacher-analytics")
-    print("Notifications: http://localhost:5000/notifications")
-    print("=" * 60)
-
-
     # Get port from Railway environment variable
-    port = int(os.environ.get('PORT', 8080))  # Changed from 5000 to 8080
-        
-    print(f"\n✓ Server starting on port {port}")
-    print("✓ Access your app at the Railway URL")
-    print(f"✓ App URL: https://{os.environ.get('RAILWAY_STATIC_URL', 'your-app-name')}.railway.app")
-        
+    port = int(os.environ.get('PORT', 8080))
+    railway_url = os.environ.get('RAILWAY_STATIC_URL', 'project-production-2a6f.up.railway.app')
+    
+    print("\nStarting server...")
+    print(f"✓ Server starting on port {port}")
+    print(f"✓ App URL: https://{railway_url}")
+    print(f"✓ Admin Test: https://{railway_url}/admin/test")
+    print(f"✓ Teacher Analytics: https://{railway_url}/teacher-analytics")
+    print(f"✓ Notifications: https://{railway_url}/notifications")
+    print("=" * 60)
+    
     # Run the app
-    app.run(host='0.0.0.0', port=port, debug=False)   
-
-
-
-
-
-
-
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 
 

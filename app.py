@@ -828,6 +828,26 @@ def get_navbar():
 def generate_share_token():
     return secrets.token_urlsafe(32)
 
+def ensure_form_has_share_token(form_id):
+    """Ensure a form has a share token, generate if not exists"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT share_token FROM forms WHERE id = %s', (form_id,))
+            form = cursor.fetchone()
+            
+            if not form or not form['share_token']:
+                share_token = generate_share_token()
+                cursor.execute('UPDATE forms SET share_token = %s WHERE id = %s', (share_token, form_id))
+                connection.commit()
+                return share_token
+            
+        connection.close()
+        return form['share_token']
+    except Exception as e:
+        print(f"Error ensuring share token: {e}")
+        return None
+
 # Routes
 @app.route('/')
 def index():
@@ -884,6 +904,12 @@ def login():
                     link='/dashboard'
                 )
                 
+                # Check for redirect after login (from public share links)
+                if 'redirect_after_login' in session:
+                    redirect_url = session.pop('redirect_after_login')
+                    print(f"Redirecting to: {redirect_url}")  # Debug log
+                    return redirect(redirect_url)
+                
                 return redirect('/dashboard')
             else:
                 content = f'''
@@ -926,6 +952,18 @@ def login():
             print(f"Login error: {e}")
             traceback.print_exc()
             return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+    
+    # GET request - show login form
+    # Check if there's a redirect URL from public share link
+    redirect_param = request.args.get('redirect', '')
+    if redirect_param:
+        session['redirect_after_login'] = redirect_param
+        print(f"Set redirect after login to: {redirect_param}")  # Debug log
+    
+    # Also check if user is already logged in but came from a public link
+    if 'user_id' in session and 'redirect_after_login' in session:
+        redirect_url = session.pop('redirect_after_login')
+        return redirect(redirect_url)
     
     content = f'''
     <div class="row justify-content-center align-items-center" style="min-height: 80vh;">
@@ -5359,12 +5397,16 @@ def delete_form(form_id):
     except Exception as e:
         print(f"Delete form error: {e}")
         return jsonify({'success': False, 'error': str(e)})
-
 @app.route('/form/<int:form_id>/share')
 @teacher_required
 def share_form(form_id):
     """Share form page"""
     try:
+        # First, ensure the form has a share token
+        share_token = ensure_form_has_share_token(form_id)
+        if not share_token:
+            return html_wrapper('Error', '<div class="alert alert-danger">Could not generate share link</div>', get_navbar(), '')
+        
         connection = get_db()
         with connection.cursor() as cursor:
             cursor.execute('SELECT * FROM forms WHERE id = %s', (form_id,))
@@ -5395,175 +5437,459 @@ def share_form(form_id):
                     <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
                 </div>
                 ''', get_navbar(), '')
-            
-            # Generate share token if not exists
-            if not form.get('share_token'):
-                share_token = generate_share_token()
-                cursor.execute('UPDATE forms SET share_token = %s WHERE id = %s', (share_token, form_id))
-                connection.commit()
-                # Update the form dictionary with new share_token
-                form['share_token'] = share_token
         
         connection.close()
         
         # Create public link
-        public_link = f"https://project-production-2a6f.up.railway.app/form/{form.get('share_token', '')}"
+        public_link = f"http://{request.host}/public/form/{share_token}"
+        
+        # Check form status for warnings
+        status_warnings = []
+        if not form.get('is_published'):
+            status_warnings.append('<li><i class="fas fa-exclamation-triangle text-warning me-2"></i>Form is not published</li>')
+        
+        if form.get('is_student_submission') and form.get('review_status') != 'approved':
+            status_text = 'pending review' if form.get('review_status') == 'pending' else 'rejected'
+            status_warnings.append(f'<li><i class="fas fa-exclamation-triangle text-warning me-2"></i>Student form is {status_text}</li>')
+        
+        if not form.get('public_link_enabled'):
+            status_warnings.append('<li><i class="fas fa-exclamation-triangle text-warning me-2"></i>Public link is disabled</li>')
+        
+        status_warning_html = ''
+        if status_warnings:
+            status_warning_html = f'''
+            <div class="alert alert-warning">
+                <h6><i class="fas fa-exclamation-triangle me-2"></i>Important Status Notes:</h6>
+                <ul class="mb-0">
+                    {''.join(status_warnings)}
+                </ul>
+                <p class="mb-0 mt-2"><small>Users may not be able to access the form until these issues are resolved.</small></p>
+            </div>
+            '''
+        
+        # Add QR code option for easier sharing
+        qr_code_url = f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={public_link}"
         
         content = f'''
         <div class="row justify-content-center">
             <div class="col-md-8">
                 <div class="card">
                     <div class="card-header bg-primary text-white">
-                        <h4 class="mb-0">Share Form: {form['title']}</h4>
-                        <p class="mb-0">{form['description']}</p>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h4 class="mb-0">Share Form: {form['title']}</h4>
+                                <p class="mb-0">{form['description'] or 'No description'}</p>
+                            </div>
+                            <div>
+                                <span class="badge {'bg-success' if form.get('public_link_enabled') else 'bg-secondary'}">
+                                    {'PUBLIC LINK ENABLED' if form.get('public_link_enabled') else 'LINK DISABLED'}
+                                </span>
+                            </div>
+                        </div>
                     </div>
                     <div class="card-body">
+                        {status_warning_html}
+                        
                         <div class="alert alert-info">
                             <i class="fas fa-info-circle me-2"></i>
-                            <strong>Important:</strong> When users click the shared link, they will be redirected to login 
-                            if they are not authenticated. After login, they will be taken directly to the form.
-                        </div>
-                        
-                        <div class="share-link-box">
-                            <h5>Public Share Link</h5>
-                            <div class="input-group mb-3">
-                                <input type="text" class="form-control" id="shareLink" value="{public_link}" readonly>
-                                <button class="btn btn-outline-primary copy-btn" onclick="copyToClipboard('shareLink')">
-                                    <i class="fas fa-copy"></i> Copy
-                                </button>
-                            </div>
-                            <div class="form-check mb-3">
-                                <input class="form-check-input" type="checkbox" id="enablePublicLink" 
-                                       onchange="togglePublicLink({form_id})" {'checked' if form.get('public_link_enabled') else ''}>
-                                <label class="form-check-label" for="enablePublicLink">
-                                    Enable public link
-                                </label>
-                            </div>
-                            <div class="share-actions">
-                                <a href="mailto:?subject=Form%20Share&body=Please%20check%20this%20form:%20{public_link}" 
-                                   class="btn btn-outline-primary">
-                                    <i class="fas fa-envelope me-2"></i>Share via Email
-                                </a>
-                                <a href="https://wa.me/?text=Check%20this%20form:%20{public_link}" 
-                                   class="btn btn-outline-success" target="_blank">
-                                    <i class="fab fa-whatsapp me-2"></i>Share on WhatsApp
-                                </a>
-                                <button onclick="regenerateToken({form_id})" class="btn btn-outline-danger">
-                                    <i class="fas fa-sync-alt me-2"></i>Regenerate Link
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <div class="mt-4">
-                            <h5>Share Statistics</h5>
-                            <div class="row">
-                                <div class="col-md-4">
-                                    <div class="card text-center">
-                                        <div class="card-body">
-                                            <h6>Link Status</h6>
-                                            {'<span class="public-link-badge">ENABLED</span>' if form.get('public_link_enabled') else '<span class="badge bg-secondary">DISABLED</span>'}
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="col-md-4">
-                                    <div class="card text-center">
-                                        <div class="card-body">
-                                            <h6>Form Type</h6>
-                                            <span class="badge {'bg-info' if form['form_type'] == 'open' else 'bg-purple'}">{form['form_type'].upper()}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="col-md-4">
-                                    <div class="card text-center">
-                                        <div class="card-body">
-                                            <h6>Department</h6>
-                                            <span class="badge bg-dark">{form['department']}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="mt-4">
-                            <h5>Instructions for Recipients</h5>
-                            <ol>
-                                <li>Click the shared link to access the form</li>
-                                <li>If not logged in, you will be redirected to the login page</li>
-                                <li>After login, you will be taken directly to the form</li>
-                                <li>For students: You may need to request access if the form is confidential</li>
-                                <li>For teachers/admins: You can access forms from your department</li>
+                            <strong>How it works:</strong> When users click the shared link, they will be:
+                            <ol class="mt-2 mb-0">
+                                <li>Redirected to login if not authenticated</li>
+                                <li>After login, taken directly to the form</li>
+                                <li>Access will be granted based on their role and permissions</li>
                             </ol>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-8">
+                                <div class="share-link-box">
+                                    <h5><i class="fas fa-link me-2"></i>Public Share Link</h5>
+                                    <div class="input-group mb-3">
+                                        <input type="text" class="form-control" id="shareLink" value="{public_link}" readonly>
+                                        <button class="btn btn-outline-primary copy-btn" onclick="copyToClipboard('shareLink')">
+                                            <i class="fas fa-copy"></i> Copy
+                                        </button>
+                                    </div>
+                                    
+                                    <div class="form-check mb-3">
+                                        <input class="form-check-input" type="checkbox" id="enablePublicLink" 
+                                               onchange="togglePublicLink({form_id})" {'checked' if form.get('public_link_enabled') else ''}>
+                                        <label class="form-check-label" for="enablePublicLink">
+                                            <strong>Enable public link</strong>
+                                            <small class="d-block text-muted">When disabled, the link will show "Form Not Found"</small>
+                                        </label>
+                                    </div>
+                                    
+                                    <div class="share-actions">
+                                        <a href="mailto:?subject=Check%20this%20form:%20{form['title']}&body=Hello,%0A%0APlease%20check%20this%20form:%20{public_link}%0A%0ABest%20regards,%0A{session['name']}" 
+                                           class="btn btn-outline-primary">
+                                            <i class="fas fa-envelope me-2"></i>Email
+                                        </a>
+                                        <a href="https://wa.me/?text=Check%20this%20form:%20{form['title']}%0A{public_link}" 
+                                           class="btn btn-outline-success" target="_blank">
+                                            <i class="fab fa-whatsapp me-2"></i>WhatsApp
+                                        </a>
+                                        <button onclick="regenerateToken({form_id})" class="btn btn-outline-danger">
+                                            <i class="fas fa-sync-alt me-2"></i>Regenerate
+                                        </button>
+                                        <button onclick="testShareLink()" class="btn btn-outline-info">
+                                            <i class="fas fa-test me-2"></i>Test Link
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card">
+                                    <div class="card-body text-center">
+                                        <h6>QR Code</h6>
+                                        <img src="{qr_code_url}" alt="QR Code" class="img-fluid mb-2" style="max-width: 150px;">
+                                        <p class="text-muted small">Scan to open on mobile devices</p>
+                                        <button onclick="downloadQRCode()" class="btn btn-sm btn-outline-secondary">
+                                            <i class="fas fa-download me-1"></i>Download QR
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-4">
+                            <div class="col-md-6">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h6 class="mb-0"><i class="fas fa-info-circle me-2"></i>Form Information</h6>
+                                    </div>
+                                    <div class="card-body">
+                                        <table class="table table-sm">
+                                            <tr>
+                                                <th>Title:</th>
+                                                <td>{form['title']}</td>
+                                            </tr>
+                                            <tr>
+                                                <th>Department:</th>
+                                                <td><span class="badge bg-dark">{form['department']}</span></td>
+                                            </tr>
+                                            <tr>
+                                                <th>Type:</th>
+                                                <td><span class="badge {'bg-info' if form['form_type'] == 'open' else 'bg-purple'}">{form['form_type'].upper()}</span></td>
+                                            </tr>
+                                            <tr>
+                                                <th>Status:</th>
+                                                <td>
+                                                    <span class="badge {'bg-success' if form['is_published'] else 'bg-warning'}">
+                                                        {'PUBLISHED' if form['is_published'] else 'DRAFT'}
+                                                    </span>
+                                                    {f'<span class="badge bg-warning ms-1">STUDENT CREATED</span>' if form.get('is_student_submission') else ''}
+                                                    {f'<span class="badge bg-info ms-1">{form["review_status"].upper()}</span>' if form.get('is_student_submission') and form.get('review_status') else ''}
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <th>Created:</th>
+                                                <td>{form['created_at'].strftime('%Y-%m-%d')}</td>
+                                            </tr>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h6 class="mb-0"><i class="fas fa-user-shield me-2"></i>Access Rules</h6>
+                                    </div>
+                                    <div class="card-body">
+                                        <h6>Who can access via this link:</h6>
+                                        <ul class="mb-3">
+                                            <li><strong>Admins/Super Admins:</strong> Can always access</li>
+                                            <li><strong>Teachers:</strong> Only from {form['department']} department</li>
+                                            <li><strong>Students:</strong>
+                                                <ul>
+                                                    <li>From {form['department']} department</li>
+                                                    <li>Open forms: Direct access</li>
+                                                    <li>Confidential forms: Need to request access</li>
+                                                    <li>Must not have already submitted</li>
+                                                </ul>
+                                            </li>
+                                        </ul>
+                                        <div class="alert alert-light">
+                                            <i class="fas fa-lightbulb me-2"></i>
+                                            <small>For best results, ensure the form is published and accessible to your intended audience.</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <h5><i class="fas fa-history me-2"></i>Share History</h5>
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Action</th>
+                                            <th>Link Status</th>
+                                            <th>Form Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td>{form['created_at'].strftime('%Y-%m-%d %H:%M')}</td>
+                                            <td>Form Created</td>
+                                            <td><span class="badge bg-secondary">N/A</span></td>
+                                            <td><span class="badge {'bg-success' if form['is_published'] else 'bg-warning'}">{'Published' if form['is_published'] else 'Draft'}</span></td>
+                                        </tr>
+                                        <tr>
+                                            <td>{form['updated_at'].strftime('%Y-%m-%d %H:%M') if form['updated_at'] else 'N/A'}</td>
+                                            <td>Last Updated</td>
+                                            <td><span class="badge {'bg-success' if form.get('public_link_enabled') else 'bg-secondary'}">{'Enabled' if form.get('public_link_enabled') else 'Disabled'}</span></td>
+                                            <td>—</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                     <div class="card-footer">
-                        <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
-                        <a href="/form/{form_id}/edit" class="btn btn-primary">Edit Form</a>
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <a href="/dashboard" class="btn btn-secondary">
+                                    <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+                                </a>
+                                <a href="/form/{form_id}/edit" class="btn btn-primary ms-2">
+                                    <i class="fas fa-edit me-2"></i>Edit Form
+                                </a>
+                            </div>
+                            <div>
+                                <a href="/form/{form_id}/responses" class="btn btn-success">
+                                    <i class="fas fa-chart-bar me-2"></i>View Responses
+                                </a>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
         '''
         
-        scripts = '''
+        scripts = f'''
         <script>
-            function copyToClipboard(elementId) {
+            function copyToClipboard(elementId) {{
                 const copyText = document.getElementById(elementId);
                 copyText.select();
                 copyText.setSelectionRange(0, 99999);
-                document.execCommand("copy");
-                
-                // Show feedback
-                const btn = event.target.closest('.copy-btn');
-                const originalHTML = btn.innerHTML;
-                btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-                btn.classList.remove('btn-outline-primary');
-                btn.classList.add('btn-success');
-                
-                setTimeout(() => {
-                    btn.innerHTML = originalHTML;
-                    btn.classList.remove('btn-success');
-                    btn.classList.add('btn-outline-primary');
-                }, 2000);
-            }
+                navigator.clipboard.writeText(copyText.value).then(() => {{
+                    // Show feedback
+                    const btn = event.target.closest('.copy-btn');
+                    const originalHTML = btn.innerHTML;
+                    btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                    btn.classList.remove('btn-outline-primary');
+                    btn.classList.add('btn-success');
+                    
+                    setTimeout(() => {{
+                        btn.innerHTML = originalHTML;
+                        btn.classList.remove('btn-success');
+                        btn.classList.add('btn-outline-primary');
+                    }}, 2000);
+                    
+                    // Show toast notification
+                    showToast('Link copied to clipboard!', 'success');
+                }}).catch(err => {{
+                    console.error('Failed to copy: ', err);
+                    showToast('Failed to copy link', 'error');
+                }});
+            }}
             
-            function togglePublicLink(formId) {
+            function togglePublicLink(formId) {{
                 const isEnabled = document.getElementById('enablePublicLink').checked;
+                const button = event.target;
+                const originalText = button.nextElementSibling?.textContent || '';
                 
-                fetch('/api/form/' + formId + '/toggle-public-link', {
+                // Show loading state
+                button.disabled = true;
+                if (button.nextElementSibling) {{
+                    button.nextElementSibling.textContent = ' Updating...';
+                }}
+                
+                fetch('/api/form/' + formId + '/toggle-public-link', {{
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({enabled: isEnabled})
-                })
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{enabled: isEnabled}})
+                }})
                 .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('Public link ' + (isEnabled ? 'enabled' : 'disabled') + ' successfully!');
-                        window.location.reload();
-                    } else {
-                        alert('Error: ' + data.error);
+                .then(data => {{
+                    if (data.success) {{
+                        showToast('Public link ' + (isEnabled ? 'enabled' : 'disabled') + ' successfully!', 'success');
+                        setTimeout(() => window.location.reload(), 1000);
+                    }} else {{
+                        showToast('Error: ' + data.error, 'error');
                         document.getElementById('enablePublicLink').checked = !isEnabled;
-                    }
-                });
-            }
+                    }}
+                    button.disabled = false;
+                    if (button.nextElementSibling) {{
+                        button.nextElementSibling.textContent = originalText;
+                    }}
+                }})
+                .catch(error => {{
+                    showToast('Network error: ' + error, 'error');
+                    document.getElementById('enablePublicLink').checked = !isEnabled;
+                    button.disabled = false;
+                    if (button.nextElementSibling) {{
+                        button.nextElementSibling.textContent = originalText;
+                    }}
+                }});
+            }}
             
-            function regenerateToken(formId) {
-                if (confirm('Regenerate share link? This will invalidate the previous link.')) {
-                    fetch('/api/form/' + formId + '/regenerate-token', {
+            function regenerateToken(formId) {{
+                if (confirm('Regenerate share link?\\\\n\\\\n⚠️ Warning: This will:\\\\n• Invalidate the previous link\\\\n• Make old links show "Form Not Found"\\\\n• Generate a new QR code')) {{
+                    fetch('/api/form/' + formId + '/regenerate-token', {{
                         method: 'POST',
-                        headers: {'Content-Type': 'application/json'}
-                    })
+                        headers: {{'Content-Type': 'application/json'}}
+                    }})
                     .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            alert('Share link regenerated successfully!');
-                            window.location.reload();
-                        } else {
-                            alert('Error: ' + data.error);
-                        }
-                    });
-                }
-            }
+                    .then(data => {{
+                        if (data.success) {{
+                            showToast('Share link regenerated successfully!', 'success');
+                            setTimeout(() => window.location.reload(), 1000);
+                        }} else {{
+                            showToast('Error: ' + data.error, 'error');
+                        }}
+                    }});
+                }}
+            }}
+            
+            function testShareLink() {{
+                const link = document.getElementById('shareLink').value;
+                if (!link) {{
+                    showToast('No link to test', 'warning');
+                    return;
+                }}
+                
+                if (!document.getElementById('enablePublicLink').checked) {{
+                    if (!confirm('Public link is currently disabled. The test will show "Form Not Found".\\\\n\\\\nEnable it first?')) {{
+                        return;
+                    }}
+                }}
+                
+                // Open in new tab
+                window.open(link, '_blank');
+                showToast('Opening test link in new tab...', 'info');
+            }}
+            
+            function downloadQRCode() {{
+                const qrCodeUrl = '{qr_code_url}';
+                const link = document.createElement('a');
+                link.href = qrCodeUrl.replace('size=200x200', 'size=400x400');
+                link.download = 'form_qr_code.png';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showToast('QR Code downloaded!', 'success');
+            }}
+            
+            function showToast(message, type = 'info') {{
+                // Create toast container if not exists
+                let toastContainer = document.getElementById('toast-container');
+                if (!toastContainer) {{
+                    toastContainer = document.createElement('div');
+                    toastContainer.id = 'toast-container';
+                    toastContainer.style.position = 'fixed';
+                    toastContainer.style.top = '20px';
+                    toastContainer.style.right = '20px';
+                    toastContainer.style.zIndex = '9999';
+                    document.body.appendChild(toastContainer);
+                }}
+                
+                // Create toast
+                const toastId = 'toast-' + Date.now();
+                const bgColor = type === 'success' ? 'bg-success' : type === 'error' ? 'bg-danger' : type === 'warning' ? 'bg-warning' : 'bg-info';
+                const toast = document.createElement('div');
+                toast.id = toastId;
+                toast.className = `toast align-items-center text-white ${{bgColor}} border-0`;
+                toast.setAttribute('role', 'alert');
+                toast.setAttribute('aria-live', 'assertive');
+                toast.setAttribute('aria-atomic', 'true');
+                toast.innerHTML = `
+                    <div class="d-flex">
+                        <div class="toast-body">
+                            ${{message}}
+                        </div>
+                        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+                    </div>
+                `;
+                
+                toastContainer.appendChild(toast);
+                const bsToast = new bootstrap.Toast(toast, {{delay: 3000}});
+                bsToast.show();
+                
+                // Remove toast after hiding
+                toast.addEventListener('hidden.bs.toast', function () {{
+                    toast.remove();
+                }});
+            }}
+            
+            // Initialize tooltips
+            document.addEventListener('DOMContentLoaded', function() {{
+                var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+                var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {{
+                    return new bootstrap.Tooltip(tooltipTriggerEl);
+                }});
+            }});
         </script>
+        
+        <style>
+            .share-link-box {{
+                background: #f8f9fa;
+                border: 2px dashed #dee2e6;
+                border-radius: 10px;
+                padding: 20px;
+                margin-bottom: 20px;
+            }}
+            
+            .share-actions {{
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+                margin-top: 15px;
+            }}
+            
+            .share-actions .btn {{
+                flex: 1;
+                min-width: 120px;
+            }}
+            
+            .copy-btn {{
+                cursor: pointer;
+                transition: all 0.3s;
+            }}
+            
+            .copy-btn:hover {{
+                transform: scale(1.05);
+            }}
+            
+            .public-link-badge {{
+                background: linear-gradient(45deg, #8b5cf6, #7c3aed);
+                color: white;
+                padding: 5px 15px;
+                border-radius: 20px;
+                font-size: 0.9rem;
+                font-weight: 600;
+            }}
+            
+            .toast {{
+                min-width: 250px;
+                margin-bottom: 10px;
+            }}
+            
+            .form-check-input:checked {{
+                background-color: #10b981;
+                border-color: #10b981;
+            }}
+            
+            @media (max-width: 768px) {{
+                .share-actions .btn {{
+                    flex: 1 0 calc(50% - 10px);
+                }}
+            }}
+        </style>
         '''
         
         return html_wrapper('Share Form', content, get_navbar(), scripts)
@@ -5573,6 +5899,81 @@ def share_form(form_id):
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
     
+
+@app.route('/debug/share-tokens')
+@admin_required
+def debug_share_tokens():
+    """Debug page to see all forms with share tokens"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT id, title, share_token, public_link_enabled, is_published, 
+                       review_status, department, created_by
+                FROM forms 
+                ORDER BY id
+            ''')
+            forms = cursor.fetchall()
+        connection.close()
+        
+        html_content = '''
+        <div class="card">
+            <div class="card-header">
+                <h4>Debug: Form Share Tokens</h4>
+            </div>
+            <div class="card-body">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Title</th>
+                            <th>Share Token</th>
+                            <th>Public Enabled</th>
+                            <th>Published</th>
+                            <th>Review Status</th>
+                            <th>Department</th>
+                            <th>Link</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        '''
+        
+        for form in forms:
+            token = form['share_token'] or 'NO TOKEN'
+            public_enabled = '✅' if form['public_link_enabled'] else '❌'
+            published = '✅' if form['is_published'] else '❌'
+            
+            if form['share_token']:
+                link = f'<a href="/public/form/{form["share_token"]}" target="_blank">Test Link</a>'
+            else:
+                link = 'No token'
+            
+            html_content += f'''
+                <tr>
+                    <td>{form['id']}</td>
+                    <td>{form['title']}</td>
+                    <td><code>{token[:20]}...</code></td>
+                    <td>{public_enabled}</td>
+                    <td>{published}</td>
+                    <td>{form['review_status']}</td>
+                    <td>{form['department']}</td>
+                    <td>{link}</td>
+                </tr>
+            '''
+        
+        html_content += '''
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        '''
+        
+        return html_wrapper('Debug Share Tokens', html_content, get_navbar(), '')
+        
+    except Exception as e:
+        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+    
+
 @app.route('/api/form/<int:form_id>/toggle-public-link', methods=['POST'])
 @teacher_required
 def toggle_public_link(form_id):
@@ -5662,29 +6063,100 @@ def public_form_access(token):
     try:
         connection = get_db()
         with connection.cursor() as cursor:
-            cursor.execute('SELECT * FROM forms WHERE share_token = %s AND public_link_enabled = TRUE', (token,))
+            cursor.execute('''
+                SELECT * FROM forms WHERE share_token = %s AND public_link_enabled = TRUE
+            ''', (token,))
             form = cursor.fetchone()
         
         connection.close()
         
         if not form:
-            return html_wrapper('Error', '''
-            <div class="alert alert-danger">
-                <h4>Form Not Found</h4>
-                <p>The requested form is not available or the link has expired.</p>
-                <a href="/login" class="btn btn-primary">Go to Login</a>
-            </div>
-            ''', '', '')
+            # Check if form exists but public link is disabled
+            connection = get_db()
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT * FROM forms WHERE share_token = %s', (token,))
+                form_exists = cursor.fetchone()
+            connection.close()
+            
+            if form_exists:
+                return html_wrapper('Form Access Disabled', '''
+                <div class="alert alert-warning">
+                    <h4>Form Access Disabled</h4>
+                    <p>The public link for this form has been disabled by the form creator.</p>
+                    <a href="/login" class="btn btn-primary">Go to Login</a>
+                </div>
+                ''', '', '')
+            else:
+                return html_wrapper('Form Not Found', '''
+                <div class="alert alert-danger">
+                    <h4>Form Not Found</h4>
+                    <p>The requested form is not available or the link has expired.</p>
+                    <p>Possible reasons:</p>
+                    <ul>
+                        <li>The form has been deleted</li>
+                        <li>The share link has been regenerated</li>
+                        <li>The link is incorrect</li>
+                    </ul>
+                    <a href="/login" class="btn btn-primary">Go to Login</a>
+                </div>
+                ''', '', '')
         
         # Check if user is logged in
         if 'user_id' not in session:
-            # Store the form_id in session to redirect after login
-            session['redirect_after_login'] = f'/form/{form["id"]}/take'
-            return redirect('/login')
+            # Store the form_id and token in session to redirect after login
+            session['redirect_after_login'] = f'/public/form/{token}'
+            # Also pass as query parameter for GET requests
+            return redirect(f'/login?redirect=/public/form/{token}')
         
-        # Check access based on request/assignment status
+        # Check if form is published
+        if not form.get('is_published'):
+            return html_wrapper('Form Not Published', f'''
+            <div class="alert alert-warning">
+                <h4>Form Not Published</h4>
+                <p>The form "{form['title']}" is not currently published.</p>
+                <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+            </div>
+            ''', get_navbar(), '')
+        
+        # Check if form is a student submission and needs review
+        if form.get('is_student_submission') and form.get('review_status') != 'approved':
+            status_map = {
+                'pending': 'pending review',
+                'rejected': 'rejected'
+            }
+            status = status_map.get(form.get('review_status'), 'not approved')
+            return html_wrapper('Form Under Review', f'''
+            <div class="alert alert-warning">
+                <h4>Form Under Review</h4>
+                <p>The form "{form['title']}" is currently {status}.</p>
+                <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+            </div>
+            ''', get_navbar(), '')
+        
+        # For logged-in users, check access based on role
         connection = get_db()
         with connection.cursor() as cursor:
+            # Admin/super_admin can access any form
+            if session['role'] in ['admin', 'super_admin']:
+                connection.close()
+                return redirect(f'/form/{form["id"]}/take')
+            
+            # Teachers can access forms from their department
+            if session['role'] == 'teacher':
+                if form['department'] == session['department']:
+                    connection.close()
+                    return redirect(f'/form/{form["id"]}/take')
+                else:
+                    connection.close()
+                    return html_wrapper('Access Denied', f'''
+                    <div class="alert alert-danger">
+                        <h4>Access Denied</h4>
+                        <p>You can only access forms from your department ({session['department']}).</p>
+                        <p>This form belongs to the {form['department']} department.</p>
+                        <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+                    </div>
+                    ''', get_navbar(), '')
+            
             # For students, check request status
             if session['role'] == 'student':
                 cursor.execute('''
@@ -5700,6 +6172,22 @@ def public_form_access(token):
                 ''', (form['id'], session['user_id']))
                 assigned = cursor.fetchone()
                 
+                # Check if already submitted
+                cursor.execute('''
+                    SELECT 1 FROM responses WHERE form_id = %s AND student_id = %s
+                ''', (form['id'], session['user_id']))
+                submitted = cursor.fetchone()
+                
+                if submitted:
+                    connection.close()
+                    return html_wrapper('Already Submitted', f'''
+                    <div class="alert alert-info">
+                        <h4>Already Submitted</h4>
+                        <p>You have already submitted this form.</p>
+                        <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+                    </div>
+                    ''', get_navbar(), '')
+                
                 # Determine access
                 has_access = False
                 if assigned:
@@ -5712,30 +6200,37 @@ def public_form_access(token):
                 
                 if not has_access:
                     connection.close()
-                    return html_wrapper('Error', f'''
+                    return html_wrapper('Access Required', f'''
                     <div class="alert alert-danger">
                         <h4>Access Required</h4>
-                        <p>You need to request access to this form first.</p>
-                        <button onclick="requestForm({form['id']})" class="btn btn-primary">Request Access</button>
-                        <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
+                        <p>You need to request access to this form.</p>
+                        <p><strong>Form:</strong> {form['title']}</p>
+                        <p><strong>Department:</strong> {form['department']}</p>
+                        <p><strong>Type:</strong> {form['form_type'].title()}</p>
+                        <div class="mt-3">
+                            <button onclick="requestForm({form['id']})" class="btn btn-primary">
+                                Request Access
+                            </button>
+                            <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
+                        </div>
                     </div>
-                    ''', get_navbar(), '''
+                    ''', get_navbar(), f'''
                     <script>
-                        function requestForm(formId) {
-                            fetch('/request-form/' + formId, {
+                        function requestForm(formId) {{
+                            fetch('/request-form/' + formId, {{
                                 method: 'POST',
-                                headers: {'Content-Type': 'application/json'}
-                            })
+                                headers: {{'Content-Type': 'application/json'}}
+                            }})
                             .then(res => res.json())
-                            .then(data => {
-                                if (data.success) {
+                            .then(data => {{
+                                if (data.success) {{
                                     alert('Request submitted successfully!');
                                     window.location.reload();
-                                } else {
+                                }} else {{
                                     alert('Error: ' + data.error);
-                                }
-                            });
-                        }
+                                }}
+                            }});
+                        }}
                     </script>
                     ''')
         
@@ -5746,7 +6241,8 @@ def public_form_access(token):
         
     except Exception as e:
         print(f"Public form access error: {e}")
-        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', '')
+        traceback.print_exc()
+        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', '', '')
 
 @app.route('/notifications')
 @login_required
@@ -7127,5 +7623,3 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-

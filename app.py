@@ -56,6 +56,7 @@ ADMIN_NAME = os.environ.get('ADMIN_NAME', 'System Administrator')
 DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
 
 # Database connection
+# Database connection - KEEP THIS FUNCTION
 def get_db():
     connection = pymysql.connect(
         host=MYSQL_HOST,
@@ -124,7 +125,7 @@ def send_email(to_email, subject, html_content):
 # Initialize database with proper table creation
 def init_db():
     try:
-        connection = get_db_connection()
+        connection = get_db()  # Changed from get_db_connection() to get_db()
         if not connection:
             print("Failed to connect to database")
             return
@@ -132,6 +133,7 @@ def init_db():
         with connection.cursor() as cursor:
             # Railway automatically creates the database, just select it
             pass            
+            # Rest of your table creation code remains the same...           
             # Rest of your table creation code remains the same...
             
             # Users table
@@ -6483,6 +6485,7 @@ if __name__ == '__main__':
     
     # For production, use Railway's host
     app.run(host='0.0.0.0', port=port)    
+
 
 
 

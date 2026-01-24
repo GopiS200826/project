@@ -55,9 +55,10 @@ ADMIN_NAME = os.environ.get('ADMIN_NAME', 'System Administrator')
 # Department options
 DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
 
-# Database connection
 def get_db():
+    """Get database connection for Railway"""
     try:
+        # Try with SSL for Railway
         connection = pymysql.connect(
             host=MYSQL_HOST,
             user=MYSQL_USER,
@@ -67,12 +68,30 @@ def get_db():
             charset='utf8mb4',
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=True,
-            connect_timeout=10
+            connect_timeout=10,
+            ssl={'ssl': {'ca': '/etc/ssl/certs/ca-certificates.crt'}}  # Railway SSL
         )
         return connection
-    except pymysql.Error as e:
-        print(f"Database connection error: {e}")
-        return None
+    except Exception as e:
+        print(f"SSL connection failed, trying without SSL: {e}")
+        # Try without SSL
+        try:
+            connection = pymysql.connect(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                database=MYSQL_DB,
+                port=MYSQL_PORT,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+                connect_timeout=10
+            )
+            print("✓ Connected to database without SSL")
+            return connection
+        except Exception as e2:
+            print(f"❌ Database connection failed: {e2}")
+            return None
 
 # Remove the old get_db() function completely (lines 76-85)
 
@@ -4311,6 +4330,34 @@ def submit_form():
         print(f"Submit form error: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/health')
+def health_check():
+    """Health check endpoint for Railway"""
+    try:
+        connection = get_db()
+        if connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                result = cursor.fetchone()
+            connection.close()
+            return jsonify({
+                "status": "healthy",
+                "database": "connected",
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                "status": "degraded",
+                "database": "not_connected",
+                "timestamp": datetime.now().isoformat()
+            }), 503
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
 @app.route('/form/<int:form_id>/responses')
 @login_required
 def view_responses(form_id):
@@ -6467,21 +6514,17 @@ def server_error(e):
 
 
 if __name__ == '__main__':
-    # Initialize database
     print("=" * 60)
-    print("FORM SYSTEM WITH DEPARTMENT SEGREGATION & TEACHER ANALYTICS")
+    print("FORM SYSTEM STARTING...")
     print("=" * 60)
-    init_db()
     
-    print("\n✓ Database initialized successfully")
-    print(f"✓ MySQL Database: {MYSQL_DB}")
-    print(f"✓ Admin Credentials: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
+    # Initialize database (with retries)
+    db_success = init_db()
     
-    if ENABLE_EMAIL_NOTIFICATIONS:
-        print(f"✓ Email Notifications: ENABLED")
-        print(f"  Email: {EMAIL_USER}")
-    else:
-        print(f"✗ Email Notifications: DISABLED (set ENABLE_EMAIL_NOTIFICATIONS = True to enable)")
+    if not db_success:
+        print("⚠️ Database initialization had issues, but continuing...")
+    
+ 
     
  
     
@@ -6522,11 +6565,15 @@ if __name__ == '__main__':
     print("=" * 60)
 
 
-    # Get port from Railway environment variable or use default
+    # Get port from Railway environment variable
     port = int(os.environ.get('PORT', 5000))
     
-    # For production, use Railway's host
-    app.run(host='0.0.0.0', port=port)    
+    print(f"\n✓ Server starting on port {port}")
+    print("✓ Access your app at the Railway URL")
+    
+    # Run the app
+    app.run(host='0.0.0.0', port=port)   
+
 
 
 

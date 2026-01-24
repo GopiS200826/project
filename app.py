@@ -30,6 +30,29 @@ MYSQL_PASSWORD = os.environ.get('MYSQLPASSWORD', 'tPLXNLpSkMKDwkOmdASGmtXdsJVMyr
 MYSQL_DB = os.environ.get('MYSQLDATABASE', 'railway')
 MYSQL_PORT = int(os.environ.get('MYSQLPORT', 3306))
 
+def get_db():
+    """Get database connection for Railway"""
+    try:
+        # Railway MySQL doesn't require SSL - use simple connection
+        connection = pymysql.connect(
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DB,
+            port=MYSQL_PORT,
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+            connect_timeout=10
+        )
+        print(f"✓ Connected to database: {MYSQL_DB} on {MYSQL_HOST}:{MYSQL_PORT}")
+        return connection
+    except Exception as e:
+        print(f"❌ Database connection failed: {e}")
+        print(f"❌ Connection details: host={MYSQL_HOST}, user={MYSQL_USER}, db={MYSQL_DB}, port={MYSQL_PORT}")
+        traceback.print_exc()
+        return None
+
 # Email Configuration
 EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
@@ -48,44 +71,7 @@ ADMIN_NAME = os.environ.get('ADMIN_NAME', 'System Administrator')
 # Department options
 DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
 
-def get_db():
-    """Get database connection for Railway"""
-    try:
-        # Try with SSL for Railway
-        connection = pymysql.connect(
-            host=MYSQL_HOST,
-            user=MYSQL_USER,
-            password=MYSQL_PASSWORD,
-            database=MYSQL_DB,
-            port=MYSQL_PORT,
-            charset='utf8mb4',
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-            connect_timeout=10,
-            ssl={'ssl': {'ca': '/etc/ssl/certs/ca-certificates.crt'}} if os.environ.get('RAILWAY_ENVIRONMENT') else None
-        )
-        print("✓ Connected to database with SSL")
-        return connection
-    except Exception as e:
-        print(f"SSL connection failed, trying without SSL: {e}")
-        # Try without SSL
-        try:
-            connection = pymysql.connect(
-                host=MYSQL_HOST,
-                user=MYSQL_USER,
-                password=MYSQL_PASSWORD,
-                database=MYSQL_DB,
-                port=MYSQL_PORT,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor,
-                autocommit=True,
-                connect_timeout=10
-            )
-            print("✓ Connected to database without SSL")
-            return connection
-        except Exception as e2:
-            print(f"❌ Database connection failed: {e2}")
-            return None
+
 
 
 # Email Configuration
@@ -137,36 +123,11 @@ def send_email(to_email, subject, html_content):
 
 
 # Initialize database with proper table creation
-# REPLACE THE ENTIRE init_db() FUNCTION WITH THIS:
 def init_db():
     """Initialize database with all tables"""
     try:
         print("Starting database initialization...")
         
-        # First connect without database to create it if needed
-        try:
-            connection = pymysql.connect(
-                host=MYSQL_HOST,
-                user=MYSQL_USER,
-                password=MYSQL_PASSWORD,
-                port=MYSQL_PORT,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor,
-                connect_timeout=10
-            )
-            
-            with connection.cursor() as cursor:
-                # Create database if it doesn't exist
-                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-                print(f"✓ Database '{MYSQL_DB}' ensured")
-            
-            connection.commit()
-            connection.close()
-        except Exception as e:
-            print(f"Database creation warning: {e}")
-            print("Assuming database already exists, continuing...")
-        
-        # Now connect to the specific database
         connection = get_db()
         if not connection:
             print("✗ Failed to connect to database")
@@ -204,8 +165,6 @@ def init_db():
                 reviewed_at TIMESTAMP NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
                 INDEX idx_created_by (created_by),
                 INDEX idx_department (department),
                 INDEX idx_form_type (form_type),
@@ -224,7 +183,6 @@ def init_db():
                 is_read BOOLEAN DEFAULT FALSE,
                 link VARCHAR(500),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 INDEX idx_user_id (user_id),
                 INDEX idx_is_read (is_read),
                 INDEX idx_created_at (created_at)
@@ -240,9 +198,6 @@ def init_db():
                 status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
                 approved_by INT,
                 approved_at TIMESTAMP,
-                FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
-                FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL,
                 INDEX idx_form_id (form_id),
                 INDEX idx_student_id (student_id),
                 INDEX idx_status (status),
@@ -259,9 +214,6 @@ def init_db():
                 assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 due_date DATETIME,
                 is_completed BOOLEAN DEFAULT FALSE,
-                FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
-                FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE CASCADE,
                 INDEX idx_form_id (form_id),
                 INDEX idx_student_id (student_id),
                 INDEX idx_is_completed (is_completed),
@@ -280,8 +232,6 @@ def init_db():
                 percentage DECIMAL(5,2) DEFAULT 0,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 time_taken INT,
-                FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
-                FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
                 INDEX idx_form_id (form_id),
                 INDEX idx_student_id (student_id),
                 UNIQUE KEY unique_response (form_id, student_id)
@@ -298,9 +248,6 @@ def init_db():
                 review_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 reviewed_at TIMESTAMP,
-                FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
-                FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (reviewer_id) REFERENCES users(id) ON DELETE CASCADE,
                 INDEX idx_form_id (form_id),
                 INDEX idx_student_id (student_id),
                 INDEX idx_reviewer_id (reviewer_id)
@@ -335,6 +282,7 @@ def init_db():
                 connection.close()
             except:
                 pass
+                
 # Password functions
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -6426,6 +6374,10 @@ def admin_test():
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
 
+@app.route('/test')
+def test():
+    return "✅ Application is running!"
+
 @app.route('/api/test-email', methods=['POST'])
 @admin_required
 def test_email():
@@ -6555,6 +6507,7 @@ if __name__ == '__main__':
     
     # Run the app
     app.run(host='0.0.0.0', port=port, debug=False)
+
 
 
 

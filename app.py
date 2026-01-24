@@ -12,74 +12,23 @@ from email.mime.multipart import MIMEMultipart
 import os
 import time
 from decimal import Decimal
-import mysql.connector
-from mysql.connector import Error
-from dotenv import load_dotenv
 
-# Load environment variables first
-load_dotenv()
 
-# Create Flask app once
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
+app.secret_key = 'your-secret-key-change-in-production'
 
-# Database Configuration for Railway
-MYSQL_HOST = os.environ.get('MYSQLHOST', 'mysql.railway.internal')
-MYSQL_USER = os.environ.get('MYSQLUSER', 'root')
-MYSQL_PASSWORD = os.environ.get('MYSQLPASSWORD', 'tPLXNLpSkMKDwkOmdASGmtXdsJVMyrVf')
-MYSQL_DB = os.environ.get('MYSQLDATABASE', 'railway')
-MYSQL_PORT = int(os.environ.get('MYSQLPORT', 3306))
-
-def get_db():
-    """Get database connection for Railway"""
-    try:
-        # Railway MySQL doesn't require SSL - use simple connection
-        connection = pymysql.connect(
-            host=MYSQL_HOST,
-            user=MYSQL_USER,
-            password=MYSQL_PASSWORD,
-            database=MYSQL_DB,
-            port=MYSQL_PORT,
-            charset='utf8mb4',
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-            connect_timeout=10
-        )
-        print(f"✓ Connected to database: {MYSQL_DB} on {MYSQL_HOST}:{MYSQL_PORT}")
-        return connection
-    except Exception as e:
-        print(f"❌ Database connection failed: {e}")
-        print(f"❌ Connection details: host={MYSQL_HOST}, user={MYSQL_USER}, db={MYSQL_DB}, port={MYSQL_PORT}")
-        traceback.print_exc()
-        return None
-
-# Email Configuration
-EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
-EMAIL_USER = os.environ.get('EMAIL_USER', '')
-EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD', '')
-EMAIL_FROM = os.environ.get('EMAIL_FROM', '')
-
-# Enable/Disable email notifications
-ENABLE_EMAIL_NOTIFICATIONS = os.environ.get('ENABLE_EMAIL_NOTIFICATIONS', 'False').lower() == 'true'
-
-# Default Admin Credentials
-ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@example.com')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
-ADMIN_NAME = os.environ.get('ADMIN_NAME', 'System Administrator')
-
-# Department options
-DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
-
-
-
+# Database Configuration
+MYSQL_HOST = 'localhost'
+MYSQL_USER = 'root'
+MYSQL_PASSWORD = 'root'
+MYSQL_DB = 'form_system_db'
 
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
-EMAIL_USER = ''  # Change this to your email
+EMAIL_USER = 'gamergopi26@gmail.com'  # Change this to your email
 EMAIL_PASSWORD = 'Admin@123'  # Change this to your app password
-EMAIL_FROM = ''  # Change this to your email
+EMAIL_FROM = 'gamrgopi26@gmail.com'  # Change this to your email
 
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
@@ -120,169 +69,180 @@ def send_email(to_email, subject, html_content):
         print(f"Error sending email to {to_email}: {e}")
         return False
 
-
+# Database connection
+def get_db():
+    connection = pymysql.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DB,
+        charset='utf8mb4',
+        cursorclass=pymysql.cursors.DictCursor
+    )
+    return connection
 
 # Initialize database with proper table creation
 def init_db():
-    """Initialize database with all tables"""
     try:
-        print("Starting database initialization...")
-        
-        connection = get_db()
-        if not connection:
-            print("✗ Failed to connect to database")
-            return False
+        # First check if database exists
+        connection = pymysql.connect(
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor
+        )
         
         with connection.cursor() as cursor:
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}")
+            cursor.execute(f"USE {MYSQL_DB}")
+            
             # Users table
             cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                email VARCHAR(100) UNIQUE NOT NULL,
-                password VARCHAR(255) NOT NULL,
-                name VARCHAR(100) NOT NULL,
-                role ENUM('student', 'teacher', 'admin') DEFAULT 'student',
-                department VARCHAR(50) DEFAULT 'IT',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_email (email),
-                INDEX idx_department (department),
-                INDEX idx_role (role)
-            )''')
-            print("✓ Users table ensured")
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            email VARCHAR(100) UNIQUE NOT NULL,
+                            password VARCHAR(255) NOT NULL,
+                            name VARCHAR(100) NOT NULL,
+                            role ENUM('student', 'teacher', 'admin') DEFAULT 'student',
+                            department VARCHAR(50) DEFAULT 'IT',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            INDEX idx_email (email),
+                            INDEX idx_department (department)
+                            )''')
             
-            # Forms table
+            # Forms table with all columns
             cursor.execute('''CREATE TABLE IF NOT EXISTS forms (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                title VARCHAR(200) NOT NULL,
-                description TEXT,
-                created_by INT NOT NULL,
-                department VARCHAR(50) NOT NULL,
-                form_type ENUM('open', 'confidential') DEFAULT 'open',
-                questions JSON,
-                is_published BOOLEAN DEFAULT FALSE,
-                is_student_submission BOOLEAN DEFAULT FALSE,
-                review_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
-                reviewed_by INT,
-                reviewed_at TIMESTAMP NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_created_by (created_by),
-                INDEX idx_department (department),
-                INDEX idx_form_type (form_type),
-                INDEX idx_is_student_submission (is_student_submission),
-                INDEX idx_review_status (review_status)
-            )''')
-            print("✓ Forms table ensured")
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            title VARCHAR(200) NOT NULL,
+                            description TEXT,
+                            created_by INT NOT NULL,
+                            department VARCHAR(50) NOT NULL,
+                            form_type ENUM('open', 'confidential') DEFAULT 'open',
+                            questions JSON,
+                            is_published BOOLEAN DEFAULT FALSE,
+                            is_student_submission BOOLEAN DEFAULT FALSE,
+                            review_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+                            reviewed_by INT,
+                            reviewed_at TIMESTAMP NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+                            FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+                            INDEX idx_created_by (created_by),
+                            INDEX idx_department_form (department),
+                            INDEX idx_form_type (form_type),
+                            INDEX idx_student_submission (is_student_submission),
+                            INDEX idx_review_status (review_status)
+                            )''')
             
             # Notifications table
             cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                title VARCHAR(200) NOT NULL,
-                message TEXT NOT NULL,
-                type ENUM('info', 'success', 'warning', 'danger') DEFAULT 'info',
-                is_read BOOLEAN DEFAULT FALSE,
-                link VARCHAR(500),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_user_id (user_id),
-                INDEX idx_is_read (is_read),
-                INDEX idx_created_at (created_at)
-            )''')
-            print("✓ Notifications table ensured")
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            user_id INT NOT NULL,
+                            title VARCHAR(200) NOT NULL,
+                            message TEXT NOT NULL,
+                            type ENUM('info', 'success', 'warning', 'danger') DEFAULT 'info',
+                            is_read BOOLEAN DEFAULT FALSE,
+                            link VARCHAR(500),
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                            INDEX idx_user_id (user_id),
+                            INDEX idx_is_read (is_read),
+                            INDEX idx_created_at (created_at)
+                        )''')
             
             # Form requests table
             cursor.execute('''CREATE TABLE IF NOT EXISTS form_requests (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                form_id INT NOT NULL,
-                student_id INT NOT NULL,
-                requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
-                approved_by INT,
-                approved_at TIMESTAMP,
-                INDEX idx_form_id (form_id),
-                INDEX idx_student_id (student_id),
-                INDEX idx_status (status),
-                UNIQUE KEY unique_form_student (form_id, student_id)
-            )''')
-            print("✓ Form requests table ensured")
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            form_id INT NOT NULL,
+                            student_id INT NOT NULL,
+                            requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+                            approved_by INT,
+                            approved_at TIMESTAMP,
+                            FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
+                            FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+                            FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL,
+                            INDEX idx_form_id (form_id),
+                            INDEX idx_student_id (student_id),
+                            INDEX idx_status (status),
+                            UNIQUE KEY unique_form_student (form_id, student_id)
+                            )''')
             
             # Assignments table
             cursor.execute('''CREATE TABLE IF NOT EXISTS assignments (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                form_id INT NOT NULL,
-                student_id INT NOT NULL,
-                assigned_by INT NOT NULL,
-                assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                due_date DATETIME,
-                is_completed BOOLEAN DEFAULT FALSE,
-                INDEX idx_form_id (form_id),
-                INDEX idx_student_id (student_id),
-                INDEX idx_is_completed (is_completed),
-                UNIQUE KEY unique_assignment (form_id, student_id)
-            )''')
-            print("✓ Assignments table ensured")
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            form_id INT NOT NULL,
+                            student_id INT NOT NULL,
+                            assigned_by INT NOT NULL,
+                            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            due_date DATETIME,
+                            is_completed BOOLEAN DEFAULT FALSE,
+                            FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
+                            FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+                            FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE CASCADE,
+                            INDEX idx_form_assignment (form_id),
+                            INDEX idx_student_assignment (student_id),
+                            INDEX idx_is_completed (is_completed),
+                            UNIQUE KEY unique_assignment (form_id, student_id)
+                            )''')
             
             # Responses table
             cursor.execute('''CREATE TABLE IF NOT EXISTS responses (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                form_id INT NOT NULL,
-                student_id INT NOT NULL,
-                answers JSON NOT NULL,
-                score DECIMAL(5,2) DEFAULT 0,
-                total_marks DECIMAL(5,2) DEFAULT 0,
-                percentage DECIMAL(5,2) DEFAULT 0,
-                submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                time_taken INT,
-                INDEX idx_form_id (form_id),
-                INDEX idx_student_id (student_id),
-                UNIQUE KEY unique_response (form_id, student_id)
-            )''')
-            print("✓ Responses table ensured")
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            form_id INT NOT NULL,
+                            student_id INT NOT NULL,
+                            answers JSON NOT NULL,
+                            score DECIMAL(5,2) DEFAULT 0,
+                            total_marks DECIMAL(5,2) DEFAULT 0,
+                            percentage DECIMAL(5,2) DEFAULT 0,
+                            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            time_taken INT,
+                            FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
+                            FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+                            INDEX idx_form_response (form_id),
+                            INDEX idx_student_response (student_id),
+                            UNIQUE KEY unique_response (form_id, student_id)
+                            )''')
             
             # Student form reviews table
             cursor.execute('''CREATE TABLE IF NOT EXISTS student_form_reviews (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                form_id INT NOT NULL,
-                student_id INT NOT NULL,
-                reviewer_id INT NOT NULL,
-                review_notes TEXT,
-                review_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
-                submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                reviewed_at TIMESTAMP,
-                INDEX idx_form_id (form_id),
-                INDEX idx_student_id (student_id),
-                INDEX idx_reviewer_id (reviewer_id)
-            )''')
-            print("✓ Student form reviews table ensured")
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            form_id INT NOT NULL,
+                            student_id INT NOT NULL,
+                            reviewer_id INT NOT NULL,
+                            review_notes TEXT,
+                            review_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+                            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            reviewed_at TIMESTAMP,
+                            FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
+                            FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+                            FOREIGN KEY (reviewer_id) REFERENCES users(id) ON DELETE CASCADE,
+                            INDEX idx_form_review (form_id),
+                            INDEX idx_student_review (student_id),
+                            INDEX idx_reviewer (reviewer_id)
+                            )''')
             
             # Create admin user if not exists
             cursor.execute("SELECT id FROM users WHERE email = %s", (ADMIN_EMAIL,))
-            admin = cursor.fetchone()
-            
-            if not admin:
+            if not cursor.fetchone():
                 hashed = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()
                 cursor.execute(
                     "INSERT INTO users (email, password, name, role, department) VALUES (%s, %s, %s, 'admin', 'IT')",
                     (ADMIN_EMAIL, hashed, ADMIN_NAME)
                 )
-                print(f"✓ Admin user created: {ADMIN_EMAIL}")
-            else:
-                print(f"✓ Admin user already exists")
+                print(f"Admin user created: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
             
             connection.commit()
-            print("\n✅ Database initialization completed successfully!")
-            return True
+            print("Database initialized successfully!")
             
     except Exception as e:
-        print(f"\n❌ Error initializing database: {e}")
+        print(f"Error initializing database: {e}")
         traceback.print_exc()
-        return False
     finally:
-        if 'connection' in locals() and connection:
-            try:
-                connection.close()
-            except:
-                pass
-                
+        if 'connection' in locals() and connection.open:
+            connection.close()
+
 # Password functions
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -4270,34 +4230,6 @@ def submit_form():
         print(f"Submit form error: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/health')
-def health_check():
-    """Health check endpoint for Railway"""
-    try:
-        connection = get_db()
-        if connection:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT 1")
-                result = cursor.fetchone()
-            connection.close()
-            return jsonify({
-                "status": "healthy",
-                "database": "connected",
-                "timestamp": datetime.now().isoformat()
-            })
-        else:
-            return jsonify({
-                "status": "degraded",
-                "database": "not_connected",
-                "timestamp": datetime.now().isoformat()
-            }), 503
-    except Exception as e:
-        return jsonify({
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
-
 @app.route('/form/<int:form_id>/responses')
 @login_required
 def view_responses(form_id):
@@ -6374,10 +6306,6 @@ def admin_test():
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
 
-@app.route('/test')
-def test():
-    return "✅ Application is running!"
-
 @app.route('/api/test-email', methods=['POST'])
 @admin_required
 def test_email():
@@ -6457,15 +6385,21 @@ def server_error(e):
     return html_wrapper('500', '<div class="alert alert-danger">Server error</div>', get_navbar(), ''), 500
 
 if __name__ == '__main__':
+    # Initialize database
     print("=" * 60)
-    print("FORM SYSTEM STARTING...")
+    print("FORM SYSTEM WITH DEPARTMENT SEGREGATION & TEACHER ANALYTICS")
     print("=" * 60)
+    init_db()
     
-    # Initialize database (with retries)
-    db_success = init_db()
+    print("\n✓ Database initialized successfully")
+    print(f"✓ MySQL Database: {MYSQL_DB}")
+    print(f"✓ Admin Credentials: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
     
-    if not db_success:
-        print("⚠️ Database initialization had issues, but continuing...")
+    if ENABLE_EMAIL_NOTIFICATIONS:
+        print(f"✓ Email Notifications: ENABLED")
+        print(f"  Email: {EMAIL_USER}")
+    else:
+        print(f"✗ Email Notifications: DISABLED (set ENABLE_EMAIL_NOTIFICATIONS = True to enable)")
     
     print("\n✓ Key Features Implemented:")
     print("  1. Department-based form segregation")
@@ -6493,21 +6427,11 @@ if __name__ == '__main__':
     print("  - Teacher: Limited to their department, full functionality")
     print("  - Student: Limited to their department, can request/respond to forms")
     
-    # Get port from Railway environment variable
-    port = int(os.environ.get('PORT', 8080))
-    railway_url = os.environ.get('RAILWAY_STATIC_URL', 'project-production-2a6f.up.railway.app')
-    
     print("\nStarting server...")
-    print(f"✓ Server starting on port {port}")
-    print(f"✓ App URL: https://{railway_url}")
-    print(f"✓ Admin Test: https://{railway_url}/admin/test")
-    print(f"✓ Teacher Analytics: https://{railway_url}/teacher-analytics")
-    print(f"✓ Notifications: https://{railway_url}/notifications")
+    print("Access at: http://localhost:5000")
+    print("Admin Test: http://localhost:5000/admin/test")
+    print("Teacher Analytics: http://localhost:5000/teacher-analytics")
+    print("Notifications: http://localhost:5000/notifications")
     print("=" * 60)
     
-    # Run the app
-    app.run(host='0.0.0.0', port=port, debug=False)
-
-
-
-
+    app.run(debug=True, host='0.0.0.0', port=5000)

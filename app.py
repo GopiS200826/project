@@ -12,6 +12,7 @@ from email.mime.multipart import MIMEMultipart
 import os
 import time
 from decimal import Decimal
+import secrets
 
 
 app = Flask(__name__)
@@ -38,8 +39,26 @@ ADMIN_EMAIL = 'admin@example.com'
 ADMIN_PASSWORD = 'admin123'
 ADMIN_NAME = 'System Administrator'
 
+# Super Admin Credentials
+SUPER_ADMIN_EMAIL = 'superadmin@example.com'
+SUPER_ADMIN_PASSWORD = 'superadmin123'
+SUPER_ADMIN_NAME = 'Super Administrator'
+
 # Department options
 DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
+
+# Database connection function - ADDED THIS MISSING FUNCTION
+def get_db():
+    """Get database connection"""
+    connection = pymysql.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DB,
+        charset='utf8mb4',
+        cursorclass=pymysql.cursors.DictCursor
+    )
+    return connection
 
 # Email sending function
 def send_email(to_email, subject, html_content):
@@ -69,19 +88,6 @@ def send_email(to_email, subject, html_content):
         print(f"Error sending email to {to_email}: {e}")
         return False
 
-# Database connection
-def get_db():
-    connection = pymysql.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
-        charset='utf8mb4',
-        cursorclass=pymysql.cursors.DictCursor
-    )
-    return connection
-
-# Initialize database with proper table creation
 def init_db():
     try:
         # First check if database exists
@@ -97,13 +103,13 @@ def init_db():
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}")
             cursor.execute(f"USE {MYSQL_DB}")
             
-            # Users table
+            # Users table - Updated to include super_admin role
             cursor.execute('''CREATE TABLE IF NOT EXISTS users (
                             id INT AUTO_INCREMENT PRIMARY KEY,
                             email VARCHAR(100) UNIQUE NOT NULL,
                             password VARCHAR(255) NOT NULL,
                             name VARCHAR(100) NOT NULL,
-                            role ENUM('student', 'teacher', 'admin') DEFAULT 'student',
+                            role ENUM('student', 'teacher', 'admin', 'super_admin') DEFAULT 'student',
                             department VARCHAR(50) DEFAULT 'IT',
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             INDEX idx_email (email),
@@ -124,6 +130,8 @@ def init_db():
                             review_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
                             reviewed_by INT,
                             reviewed_at TIMESTAMP NULL,
+                            share_token VARCHAR(100) UNIQUE,
+                            public_link_enabled BOOLEAN DEFAULT FALSE,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                             FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
@@ -132,7 +140,8 @@ def init_db():
                             INDEX idx_department_form (department),
                             INDEX idx_form_type (form_type),
                             INDEX idx_student_submission (is_student_submission),
-                            INDEX idx_review_status (review_status)
+                            INDEX idx_review_status (review_status),
+                            INDEX idx_share_token (share_token)
                             )''')
             
             # Notifications table
@@ -233,6 +242,16 @@ def init_db():
                 )
                 print(f"Admin user created: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
             
+            # Create super admin user if not exists
+            cursor.execute("SELECT id FROM users WHERE email = %s", (SUPER_ADMIN_EMAIL,))
+            if not cursor.fetchone():
+                hashed = hashlib.sha256(SUPER_ADMIN_PASSWORD.encode()).hexdigest()
+                cursor.execute(
+                    "INSERT INTO users (email, password, name, role, department) VALUES (%s, %s, %s, 'super_admin', 'IT')",
+                    (SUPER_ADMIN_EMAIL, hashed, SUPER_ADMIN_NAME)
+                )
+                print(f"Super Admin user created: {SUPER_ADMIN_EMAIL} / {SUPER_ADMIN_PASSWORD}")
+            
             connection.commit()
             print("Database initialized successfully!")
             
@@ -263,7 +282,7 @@ def teacher_required(f):
     @wraps(f)
     @login_required
     def decorated_function(*args, **kwargs):
-        if session.get('role') not in ['teacher', 'admin']:
+        if session.get('role') not in ['teacher', 'admin', 'super_admin']:
             return '''
             <script>
                 alert("Teacher access required");
@@ -277,7 +296,7 @@ def admin_required(f):
     @wraps(f)
     @login_required
     def decorated_function(*args, **kwargs):
-        if session.get('role') != 'admin':
+        if session.get('role') not in ['admin', 'super_admin']:
             return '''
             <script>
                 alert("Admin access required");
@@ -295,6 +314,20 @@ def student_required(f):
             return '''
             <script>
                 alert("Student access required");
+                window.location.href = "/dashboard";
+            </script>
+            '''
+        return f(*args, **kwargs)
+    return decorated_function
+
+def super_admin_required(f):
+    @wraps(f)
+    @login_required
+    def decorated_function(*args, **kwargs):
+        if session.get('role') != 'super_admin':
+            return '''
+            <script>
+                alert("Super Admin access required");
                 window.location.href = "/dashboard";
             </script>
             '''
@@ -483,6 +516,10 @@ def html_wrapper(title, content, navbar='', scripts=''):
                 background: linear-gradient(45deg, #10b981, #059669);
                 color: white;
             }}
+            .badge-super-admin {{
+                background: linear-gradient(45deg, #dc2626, #b91c1c);
+                color: white;
+            }}
             .glass-effect {{
                 background: rgba(255, 255, 255, 0.9);
                 backdrop-filter: blur(10px);
@@ -588,6 +625,33 @@ def html_wrapper(title, content, navbar='', scripts=''):
                 max-height: 400px;
                 overflow-y: auto;
             }}
+            .share-link-box {{
+                background: #f8f9fa;
+                border: 2px dashed #dee2e6;
+                border-radius: 10px;
+                padding: 15px;
+                margin: 15px 0;
+            }}
+            .copy-btn {{
+                cursor: pointer;
+                transition: all 0.3s;
+            }}
+            .copy-btn:hover {{
+                transform: scale(1.05);
+            }}
+            .share-actions {{
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+                margin-top: 10px;
+            }}
+            .public-link-badge {{
+                background: linear-gradient(45deg, #8b5cf6, #7c3aed);
+                color: white;
+                padding: 5px 10px;
+                border-radius: 20px;
+                font-size: 0.8rem;
+            }}
         </style>
     </head>
     <body>
@@ -615,7 +679,9 @@ def get_navbar():
         notification_badge = f'<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{unread_count}</span>'
     
     user_badge = ''
-    if session['role'] == 'admin':
+    if session['role'] == 'super_admin':
+        user_badge = '<span class="badge badge-super-admin">SUPER ADMIN</span>'
+    elif session['role'] == 'admin':
         user_badge = '<span class="badge bg-danger">ADMIN</span>'
     elif session['role'] == 'teacher':
         user_badge = '<span class="badge bg-warning">TEACHER</span>'
@@ -628,7 +694,7 @@ def get_navbar():
     <li><a class="dropdown-item" href="/dashboard"><i class="fas fa-home me-2"></i>Dashboard</a></li>
     '''
     
-    if session['role'] in ['teacher', 'admin']:
+    if session['role'] in ['teacher', 'admin', 'super_admin']:
         nav_links += '''
         <li><a class="dropdown-item" href="/create-form"><i class="fas fa-plus me-2"></i>Create Form</a></li>
         <li><a class="dropdown-item" href="/form-requests"><i class="fas fa-clock me-2"></i>Pending Requests</a></li>
@@ -643,7 +709,7 @@ def get_navbar():
         <li><a class="dropdown-item" href="/my-responses"><i class="fas fa-chart-bar me-2"></i>My Results</a></li>
         '''
     
-    if session['role'] == 'admin':
+    if session['role'] in ['admin', 'super_admin']:
         nav_links += '''
         <li><a class="dropdown-item" href="/admin"><i class="fas fa-cogs me-2"></i>Admin Panel</a></li>
         <li><a class="dropdown-item" href="/admin/test"><i class="fas fa-vial me-2"></i>System Test</a></li>
@@ -758,6 +824,10 @@ def get_navbar():
     </script>
     '''
 
+# Generate share token
+def generate_share_token():
+    return secrets.token_urlsafe(32)
+
 # Routes
 @app.route('/')
 def index():
@@ -784,7 +854,7 @@ def login():
                 session['department'] = user['department']
                 
                 # Send login notification email
-                if ENABLE_EMAIL_NOTIFICATIONS and email != ADMIN_EMAIL:
+                if ENABLE_EMAIL_NOTIFICATIONS and email != ADMIN_EMAIL and email != SUPER_ADMIN_EMAIL:
                     html_content = f'''
                     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                         <h2 style="color: #667eea;">Login Alert</h2>
@@ -841,7 +911,10 @@ def login():
                                 <div class="text-center text-muted small mt-3">
                                     <strong>Default Admin:</strong><br>
                                     Email: {ADMIN_EMAIL}<br>
-                                    Password: {ADMIN_PASSWORD}
+                                    Password: {ADMIN_PASSWORD}<br>
+                                    <strong>Super Admin:</strong><br>
+                                    Email: {SUPER_ADMIN_EMAIL}<br>
+                                    Password: {SUPER_ADMIN_PASSWORD}
                                 </div>
                             </div>
                         </div>
@@ -878,7 +951,10 @@ def login():
                     <div class="text-center text-muted small mt-3">
                         <strong>Default Admin:</strong><br>
                         Email: {ADMIN_EMAIL}<br>
-                        Password: {ADMIN_PASSWORD}
+                        Password: {ADMIN_PASSWORD}<br>
+                        <strong>Super Admin:</strong><br>
+                        Email: {SUPER_ADMIN_EMAIL}<br>
+                        Password: {SUPER_ADMIN_PASSWORD}
                     </div>
                 </div>
             </div>
@@ -1068,7 +1144,7 @@ def dashboard():
             dept_filter = ''
             params = []
             
-            if user_role == 'admin':
+            if user_role in ['admin', 'super_admin']:
                 if selected_dept:
                     dept_filter = 'AND f.department = %s'
                     params.append(selected_dept)
@@ -1079,7 +1155,7 @@ def dashboard():
                 params.append(user_dept)
             
             # Get forms based on user role and department
-            if user_role == 'admin':
+            if user_role in ['admin', 'super_admin']:
                 cursor.execute(f'''
                     SELECT f.*, u.name as creator_name, u.department as creator_department 
                     FROM forms f 
@@ -1128,8 +1204,8 @@ def dashboard():
             
             # Get pending requests count for teachers/admin
             pending_requests_count = 0
-            if user_role in ['teacher', 'admin']:
-                if user_role == 'admin':
+            if user_role in ['teacher', 'admin', 'super_admin']:
+                if user_role in ['admin', 'super_admin']:
                     cursor.execute('''
                         SELECT COUNT(*) as count FROM form_requests WHERE status = 'pending'
                     ''')
@@ -1144,8 +1220,8 @@ def dashboard():
             
             # Get pending reviews count for teachers/admin
             pending_reviews_count = 0
-            if user_role in ['teacher', 'admin']:
-                if user_role == 'admin':
+            if user_role in ['teacher', 'admin', 'super_admin']:
+                if user_role in ['admin', 'super_admin']:
                     if selected_dept:
                         cursor.execute('''
                             SELECT COUNT(*) as count FROM forms 
@@ -1170,7 +1246,7 @@ def dashboard():
             
             # Get department statistics for admin
             dept_stats = {}
-            if user_role == 'admin':
+            if user_role in ['admin', 'super_admin']:
                 cursor.execute('''
                     SELECT department, 
                            COUNT(*) as form_count,
@@ -1209,10 +1285,10 @@ def dashboard():
         
         # Department filter for admin/teacher
         dept_filter_html = ''
-        if user_role in ['admin', 'teacher']:
-            departments_options = '<option value="">All Departments</option>' if user_role == 'admin' else f'<option value="{user_dept}" selected>{user_dept} (Current)</option>'
+        if user_role in ['admin', 'super_admin', 'teacher']:
+            departments_options = '<option value="">All Departments</option>' if user_role in ['admin', 'super_admin'] else f'<option value="{user_dept}" selected>{user_dept} (Current)</option>'
             
-            if user_role == 'admin':
+            if user_role in ['admin', 'super_admin']:
                 for dept in DEPARTMENTS:
                     selected = 'selected' if dept == selected_dept else ''
                     departments_options += f'<option value="{dept}" {selected}>{dept}</option>'
@@ -1228,7 +1304,7 @@ def dashboard():
                     </div>
                     <div class="col-md-8">
                         <small class="text-muted">
-                            {f'Showing forms from: {selected_dept if selected_dept else "All Departments"}' if user_role == 'admin' else f'Showing forms from your department: {user_dept}'}
+                            {f'Showing forms from: {selected_dept if selected_dept else "All Departments"}' if user_role in ['admin', 'super_admin'] else f'Showing forms from your department: {user_dept}'}
                         </small>
                     </div>
                 </form>
@@ -1237,7 +1313,7 @@ def dashboard():
         
         # Department statistics for admin
         dept_stats_html = ''
-        if user_role == 'admin' and not selected_dept:
+        if user_role in ['admin', 'super_admin'] and not selected_dept:
             dept_stats_html = '''
             <div class="dept-stats mb-4">
                 <h5 class="mb-3">Department-wise Form Statistics</h5>
@@ -1295,14 +1371,25 @@ def dashboard():
             edit_button = ''
             results_button = ''
             assign_button = ''
+            share_button = ''
+            delete_button = ''
             student_actions = ''
             
-            if form['created_by'] == user_id or user_role in ['teacher', 'admin']:
+            if form['created_by'] == user_id or user_role in ['teacher', 'admin', 'super_admin']:
                 edit_button = f'<a href="/form/{form["id"]}/edit" class="btn btn-sm btn-outline-primary"><i class="fas fa-edit"></i> Edit</a>'
                 results_button = f'<a href="/form/{form["id"]}/responses" class="btn btn-sm btn-outline-success"><i class="fas fa-chart-bar"></i> Results</a>'
             
-            if user_role in ['teacher', 'admin']:
+            if user_role in ['teacher', 'admin', 'super_admin']:
                 assign_button = f'<a href="/form/{form["id"]}/assign" class="btn btn-sm btn-outline-warning"><i class="fas fa-user-plus"></i> Assign</a>'
+                share_button = f'<a href="/form/{form["id"]}/share" class="btn btn-sm btn-outline-info"><i class="fas fa-share-alt"></i> Share</a>'
+            
+            # Super admin delete button
+            if user_role == 'super_admin':
+                delete_button = f'''
+                <button onclick="deleteForm({form['id']}, '{form['title']}')" class="btn btn-sm btn-outline-danger">
+                    <i class="fas fa-trash"></i> Delete
+                </button>
+                '''
             
             # Student actions for taking forms
             if user_role == 'student':
@@ -1321,7 +1408,7 @@ def dashboard():
             
             # For admin, show creator's department
             dept_info = f'<i class="fas fa-building me-1"></i>{form["department"]}'
-            if user_role == 'admin' and 'creator_department' in form:
+            if user_role in ['admin', 'super_admin'] and 'creator_department' in form:
                 dept_info = f'<i class="fas fa-building me-1"></i>{form["department"]} (Creator Dept: {form["creator_department"]})'
             
             forms_html += f'''
@@ -1344,6 +1431,8 @@ def dashboard():
                         {edit_button}
                         {results_button}
                         {assign_button}
+                        {share_button}
+                        {delete_button}
                     </div>
                 </div>
             </div>
@@ -1441,12 +1530,12 @@ def dashboard():
         
         # Pending requests badge for teachers/admin
         requests_badge = ''
-        if user_role in ['teacher', 'admin'] and pending_requests_count > 0:
+        if user_role in ['teacher', 'admin', 'super_admin'] and pending_requests_count > 0:
             requests_badge = f'<span class="badge bg-danger request-badge">{pending_requests_count}</span>'
         
         # Pending reviews badge for teachers/admin
         reviews_badge = ''
-        if user_role in ['teacher', 'admin'] and pending_reviews_count > 0:
+        if user_role in ['teacher', 'admin', 'super_admin'] and pending_reviews_count > 0:
             reviews_badge = f'<span class="badge bg-warning request-badge">{pending_reviews_count}</span>'
         
         # Build dashboard
@@ -1456,7 +1545,7 @@ def dashboard():
                 <h2 class="text-white">Welcome, {session["name"]}!</h2>
                 <div>
                     <span class="badge bg-light text-dark me-2">{session["department"]}</span>
-                    {f'<a href="/create-form" class="btn btn-primary"><i class="fas fa-plus me-2"></i>Create Form</a>' if user_role in ['teacher', 'admin'] else ''}
+                    {f'<a href="/create-form" class="btn btn-primary"><i class="fas fa-plus me-2"></i>Create Form</a>' if user_role in ['teacher', 'admin', 'super_admin'] else ''}
                     {f'<a href="/create-student-form" class="btn btn-success"><i class="fas fa-plus-circle me-2"></i>Create Form</a>' if user_role == 'student' else ''}
                 </div>
             </div>
@@ -1504,6 +1593,24 @@ def dashboard():
                     });
                 }
             }
+            
+            function deleteForm(formId, formTitle) {
+                if (confirm(`Are you sure you want to delete the form "${formTitle}"? This action cannot be undone.`)) {
+                    fetch('/form/' + formId + '/delete', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert('Form deleted successfully!');
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + data.error);
+                        }
+                    });
+                }
+            }
         </script>
         '''
         
@@ -1517,7 +1624,7 @@ def dashboard():
 @app.route('/create-form', methods=['GET', 'POST'])
 @login_required
 def create_form():
-    if session['role'] not in ['teacher', 'admin']:
+    if session['role'] not in ['teacher', 'admin', 'super_admin']:
         return redirect('/create-student-form')
     
     if request.method == 'POST':
@@ -1532,10 +1639,12 @@ def create_form():
             
             connection = get_db()
             with connection.cursor() as cursor:
+                # Generate share token
+                share_token = generate_share_token()
                 cursor.execute('''
-                    INSERT INTO forms (title, description, created_by, department, form_type, questions) 
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                ''', (title, description, session['user_id'], department, form_type, '[]'))
+                    INSERT INTO forms (title, description, created_by, department, form_type, questions, share_token) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (title, description, session['user_id'], department, form_type, '[]', share_token))
                 form_id = cursor.lastrowid
                 connection.commit()
             connection.close()
@@ -1580,8 +1689,8 @@ def create_form():
             traceback.print_exc()
             return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
     
-    # Show all departments for admin, only user's department for teachers
-    if session['role'] == 'admin':
+    # Show all departments for admin/super_admin, only user's department for teachers
+    if session['role'] in ['admin', 'super_admin']:
         departments_options = ''.join([f'<option value="{dept}" {"selected" if dept == session.get("department") else ""}>{dept}</option>' for dept in DEPARTMENTS])
     else:
         departments_options = f'<option value="{session.get("department")}" selected>{session.get("department")}</option>'
@@ -1656,12 +1765,15 @@ def create_student_form():
                 cursor.execute('SELECT name, email FROM users WHERE id = %s', (reviewer_id,))
                 reviewer = cursor.fetchone()
                 
+                # Generate share token
+                share_token = generate_share_token()
+                
                 # Create the form as student submission
                 cursor.execute('''
                     INSERT INTO forms (title, description, created_by, department, form_type, questions, 
-                                      is_student_submission, review_status, reviewed_by) 
-                    VALUES (%s, %s, %s, %s, %s, %s, TRUE, 'pending', %s)
-                ''', (title, description, session['user_id'], department, form_type, '[]', reviewer_id))
+                                      is_student_submission, review_status, reviewed_by, share_token) 
+                    VALUES (%s, %s, %s, %s, %s, %s, TRUE, 'pending', %s, %s)
+                ''', (title, description, session['user_id'], department, form_type, '[]', reviewer_id, share_token))
                 form_id = cursor.lastrowid
                 
                 # Also create entry in student_form_reviews table
@@ -1751,7 +1863,7 @@ def create_student_form():
         cursor.execute('''
             SELECT id, name, email, role, department 
             FROM users 
-            WHERE role IN ('teacher', 'admin') 
+            WHERE role IN ('teacher', 'admin', 'super_admin') 
             AND department = %s
             ORDER BY name
         ''', (session['department'],))
@@ -1760,7 +1872,7 @@ def create_student_form():
     
     reviewers_options = '<option value="">Select a reviewer...</option>'
     for reviewer in reviewers:
-        role_text = 'Teacher' if reviewer['role'] == 'teacher' else 'Admin'
+        role_text = 'Teacher' if reviewer['role'] == 'teacher' else 'Admin' if reviewer['role'] == 'admin' else 'Super Admin'
         reviewers_options += f'<option value="{reviewer["id"]}">{reviewer["name"]} ({reviewer["email"]}) - {role_text}</option>'
     
     content = f'''
@@ -2515,11 +2627,11 @@ def review_forms():
         connection = get_db()
         user_dept = session['department']
         
-        # Get selected department for admin
+        # Get selected department for admin/super_admin
         selected_dept = request.args.get('department', '')
         
         with connection.cursor() as cursor:
-            if session['role'] == 'admin':
+            if session['role'] in ['admin', 'super_admin']:
                 query = '''
                     SELECT f.*, u.name as student_name, u.email as student_email, 
                            u2.name as reviewer_name, u2.email as reviewer_email
@@ -2551,7 +2663,7 @@ def review_forms():
             pending_forms = cursor.fetchall()
             
             # Get recently reviewed forms
-            if session['role'] == 'admin':
+            if session['role'] in ['admin', 'super_admin']:
                 query = '''
                     SELECT f.*, u.name as student_name, u.email as student_email,
                            u2.name as reviewer_name
@@ -2586,9 +2698,9 @@ def review_forms():
         
         connection.close()
         
-        # Department filter for admin
+        # Department filter for admin/super_admin
         dept_filter_html = ''
-        if session['role'] == 'admin':
+        if session['role'] in ['admin', 'super_admin']:
             departments_options = '<option value="">All Departments</option>'
             for dept in DEPARTMENTS:
                 selected = 'selected' if dept == selected_dept else ''
@@ -2947,8 +3059,8 @@ def review_form_action(form_id):
                 connection.close()
                 return jsonify({'success': False, 'error': 'Form not found'})
             
-            # Admin can review any form, teachers only from their department
-            if session['role'] != 'admin':
+            # Admin/super_admin can review any form, teachers only from their department
+            if session['role'] == 'teacher':
                 if form['department'] != session['department']:
                     connection.close()
                     return jsonify({'success': False, 'error': 'Access denied - wrong department'})
@@ -3081,8 +3193,8 @@ def edit_form(form_id):
         if not form:
             return redirect('/dashboard')
         
-        # Check permissions - admin can edit any form
-        if form['created_by'] != session['user_id'] and session['role'] not in ['teacher', 'admin']:
+        # Check permissions - admin/super_admin can edit any form
+        if form['created_by'] != session['user_id'] and session['role'] not in ['teacher', 'admin', 'super_admin']:
             return html_wrapper('Error', '<div class="alert alert-danger">Access denied</div>', get_navbar(), '')
         
         # Teachers can only edit forms from their department
@@ -3459,8 +3571,8 @@ def assign_form(form_id):
         
         # GET request - show the form
         with connection.cursor() as cursor:
-            # For admin, show students from all departments, for teachers only from form's department
-            if session['role'] == 'admin':
+            # For admin/super_admin, show students from all departments, for teachers only from form's department
+            if session['role'] in ['admin', 'super_admin']:
                 cursor.execute('''
                     SELECT id, name, email, department FROM users 
                     WHERE role = "student"
@@ -3486,8 +3598,8 @@ def assign_form(form_id):
         connection.close()
         
         students_options = ''
-        if session['role'] == 'admin':
-            # Group students by department for admin
+        if session['role'] in ['admin', 'super_admin']:
+            # Group students by department for admin/super_admin
             students_by_dept = {}
             for s in students:
                 if s['department'] not in students_by_dept:
@@ -3649,11 +3761,11 @@ def form_requests():
     try:
         connection = get_db()
         
-        # Get selected department for admin
+        # Get selected department for admin/super_admin
         selected_dept = request.args.get('department', '')
         
         with connection.cursor() as cursor:
-            if session['role'] == 'admin':
+            if session['role'] in ['admin', 'super_admin']:
                 query = '''
                     SELECT fr.*, f.title, f.department, f.form_type, u.name as student_name, u.email as student_email
                     FROM form_requests fr
@@ -3682,9 +3794,9 @@ def form_requests():
             requests = cursor.fetchall()
         connection.close()
         
-        # Department filter for admin
+        # Department filter for admin/super_admin
         dept_filter_html = ''
-        if session['role'] == 'admin':
+        if session['role'] in ['admin', 'super_admin']:
             departments_options = '<option value="">All Departments</option>'
             for dept in DEPARTMENTS:
                 selected = 'selected' if dept == selected_dept else ''
@@ -3798,7 +3910,7 @@ def handle_request(request_id, action):
         connection = get_db()
         with connection.cursor() as cursor:
             # Check if user has permission to handle this request
-            if session['role'] != 'admin':
+            if session['role'] == 'teacher':
                 cursor.execute('''
                     SELECT f.created_by 
                     FROM form_requests fr
@@ -3958,8 +4070,8 @@ def take_form(form_id):
             ''', (form_id, session['user_id']))
             assigned = cursor.fetchone()
             
-            # Admin can access any form
-            admin_access = session['role'] == 'admin'
+            # Admin/super_admin can access any form
+            admin_access = session['role'] in ['admin', 'super_admin']
             
             # Check if user has submitted already
             cursor.execute('''
@@ -4234,7 +4346,7 @@ def submit_form():
 @login_required
 def view_responses(form_id):
     try:
-        # Get selected department for admin
+        # Get selected department for admin/super_admin
         selected_dept = request.args.get('department', '')
         
         connection = get_db()
@@ -4242,9 +4354,9 @@ def view_responses(form_id):
             cursor.execute('SELECT * FROM forms WHERE id = %s', (form_id,))
             form = cursor.fetchone()
             
-            # Admin can view all responses
-            if session['role'] != 'admin':
-                if not form or (form['created_by'] != session['user_id'] and session['role'] != 'admin'):
+            # Admin/super_admin can view all responses
+            if session['role'] not in ['admin', 'super_admin']:
+                if not form or (form['created_by'] != session['user_id'] and session['role'] not in ['admin', 'super_admin']):
                     connection.close()
                     return html_wrapper('Error', '<div class="alert alert-danger">Access denied</div>', get_navbar(), '')
             
@@ -4259,8 +4371,8 @@ def view_responses(form_id):
                 </div>
                 ''', get_navbar(), '')
             
-            # Get responses with department filter for admin
-            if session['role'] == 'admin' and selected_dept:
+            # Get responses with department filter for admin/super_admin
+            if session['role'] in ['admin', 'super_admin'] and selected_dept:
                 cursor.execute('''
                     SELECT r.*, u.name, u.email, u.department
                     FROM responses r 
@@ -4277,9 +4389,9 @@ def view_responses(form_id):
             responses = cursor.fetchall()
         connection.close()
         
-        # Department filter for admin
+        # Department filter for admin/super_admin
         dept_filter_html = ''
-        if session['role'] == 'admin':
+        if session['role'] in ['admin', 'super_admin']:
             departments_options = '<option value="">All Departments</option>'
             for dept in DEPARTMENTS:
                 selected = 'selected' if dept == selected_dept else ''
@@ -5176,6 +5288,466 @@ def teacher_analytics():
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
 
+@app.route('/form/<int:form_id>/delete', methods=['POST'])
+@super_admin_required
+def delete_form(form_id):
+    """Delete a form (Super Admin only)"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get form details for notification
+            cursor.execute('SELECT title, created_by FROM forms WHERE id = %s', (form_id,))
+            form = cursor.fetchone()
+            
+            if not form:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Form not found'})
+            
+            # Delete the form
+            cursor.execute('DELETE FROM forms WHERE id = %s', (form_id,))
+            connection.commit()
+        
+        connection.close()
+        
+        # Create notification for super admin
+        create_notification(
+            user_id=session['user_id'],
+            title='Form Deleted',
+            message=f'Form "{form["title"]}" has been deleted.',
+            type='danger'
+        )
+        
+        # Create notification for form creator (if different from super admin)
+        if form['created_by'] != session['user_id']:
+            create_notification(
+                user_id=form['created_by'],
+                title='Your Form Was Deleted',
+                message=f'Your form "{form["title"]}" was deleted by the super administrator.',
+                type='danger',
+                link='/dashboard'
+            )
+        
+        # Send deletion email notification
+        if ENABLE_EMAIL_NOTIFICATIONS:
+            # Get creator details
+            connection = get_db()
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT email, name FROM users WHERE id = %s', (form['created_by'],))
+                creator = cursor.fetchone()
+            connection.close()
+            
+            if creator:
+                html_content = f'''
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #ef4444;">Form Deleted</h2>
+                    <p>Hello {creator['name']},</p>
+                    <p>Your form has been deleted by the super administrator.</p>
+                    <div style="background: #fef2f2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                        <p><strong>Form Details:</strong></p>
+                        <p>Title: {form['title']}</p>
+                        <p>Deleted By: {session['name']} (Super Admin)</p>
+                        <p>Deletion Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    </div>
+                    <p>If you believe this was a mistake, please contact the system administrator.</p>
+                    <hr>
+                    <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
+                </div>
+                '''
+                send_email(creator['email'], 'Form Deleted - FormMaster Pro', html_content)
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"Delete form error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/form/<int:form_id>/share')
+@teacher_required
+def share_form(form_id):
+    """Share form page"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT * FROM forms WHERE id = %s', (form_id,))
+            form = cursor.fetchone()
+            
+            if not form:
+                connection.close()
+                return html_wrapper('Error', '<div class="alert alert-danger">Form not found</div>', get_navbar(), '')
+            
+            # Check permissions
+            if form['created_by'] != session['user_id'] and session['role'] not in ['admin', 'super_admin']:
+                connection.close()
+                return html_wrapper('Error', '''
+                <div class="alert alert-danger">
+                    <h4>Access Denied</h4>
+                    <p>You can only share forms that you created.</p>
+                    <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+                </div>
+                ''', get_navbar(), '')
+            
+            # Teachers can only share forms from their department
+            if session['role'] == 'teacher' and form['department'] != session['department']:
+                connection.close()
+                return html_wrapper('Error', '''
+                <div class="alert alert-danger">
+                    <h4>Access Denied</h4>
+                    <p>You can only share forms from your department.</p>
+                    <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+                </div>
+                ''', get_navbar(), '')
+            
+            # Generate share token if not exists
+            if not form.get('share_token'):
+                share_token = generate_share_token()
+                cursor.execute('UPDATE forms SET share_token = %s WHERE id = %s', (share_token, form_id))
+                connection.commit()
+                # Update the form dictionary with new share_token
+                form['share_token'] = share_token
+        
+        connection.close()
+        
+        # Create public link
+        public_link = f"http://localhost:5000/public/form/{form.get('share_token', '')}"
+        
+        content = f'''
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h4 class="mb-0">Share Form: {form['title']}</h4>
+                        <p class="mb-0">{form['description']}</p>
+                    </div>
+                    <div class="card-body">
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle me-2"></i>
+                            <strong>Important:</strong> When users click the shared link, they will be redirected to login 
+                            if they are not authenticated. After login, they will be taken directly to the form.
+                        </div>
+                        
+                        <div class="share-link-box">
+                            <h5>Public Share Link</h5>
+                            <div class="input-group mb-3">
+                                <input type="text" class="form-control" id="shareLink" value="{public_link}" readonly>
+                                <button class="btn btn-outline-primary copy-btn" onclick="copyToClipboard('shareLink')">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="enablePublicLink" 
+                                       onchange="togglePublicLink({form_id})" {'checked' if form.get('public_link_enabled') else ''}>
+                                <label class="form-check-label" for="enablePublicLink">
+                                    Enable public link
+                                </label>
+                            </div>
+                            <div class="share-actions">
+                                <a href="mailto:?subject=Form%20Share&body=Please%20check%20this%20form:%20{public_link}" 
+                                   class="btn btn-outline-primary">
+                                    <i class="fas fa-envelope me-2"></i>Share via Email
+                                </a>
+                                <a href="https://wa.me/?text=Check%20this%20form:%20{public_link}" 
+                                   class="btn btn-outline-success" target="_blank">
+                                    <i class="fab fa-whatsapp me-2"></i>Share on WhatsApp
+                                </a>
+                                <button onclick="regenerateToken({form_id})" class="btn btn-outline-danger">
+                                    <i class="fas fa-sync-alt me-2"></i>Regenerate Link
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <h5>Share Statistics</h5>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="card text-center">
+                                        <div class="card-body">
+                                            <h6>Link Status</h6>
+                                            {'<span class="public-link-badge">ENABLED</span>' if form.get('public_link_enabled') else '<span class="badge bg-secondary">DISABLED</span>'}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card text-center">
+                                        <div class="card-body">
+                                            <h6>Form Type</h6>
+                                            <span class="badge {'bg-info' if form['form_type'] == 'open' else 'bg-purple'}">{form['form_type'].upper()}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card text-center">
+                                        <div class="card-body">
+                                            <h6>Department</h6>
+                                            <span class="badge bg-dark">{form['department']}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <h5>Instructions for Recipients</h5>
+                            <ol>
+                                <li>Click the shared link to access the form</li>
+                                <li>If not logged in, you will be redirected to the login page</li>
+                                <li>After login, you will be taken directly to the form</li>
+                                <li>For students: You may need to request access if the form is confidential</li>
+                                <li>For teachers/admins: You can access forms from your department</li>
+                            </ol>
+                        </div>
+                    </div>
+                    <div class="card-footer">
+                        <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
+                        <a href="/form/{form_id}/edit" class="btn btn-primary">Edit Form</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        '''
+        
+        scripts = '''
+        <script>
+            function copyToClipboard(elementId) {
+                const copyText = document.getElementById(elementId);
+                copyText.select();
+                copyText.setSelectionRange(0, 99999);
+                document.execCommand("copy");
+                
+                // Show feedback
+                const btn = event.target.closest('.copy-btn');
+                const originalHTML = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                btn.classList.remove('btn-outline-primary');
+                btn.classList.add('btn-success');
+                
+                setTimeout(() => {
+                    btn.innerHTML = originalHTML;
+                    btn.classList.remove('btn-success');
+                    btn.classList.add('btn-outline-primary');
+                }, 2000);
+            }
+            
+            function togglePublicLink(formId) {
+                const isEnabled = document.getElementById('enablePublicLink').checked;
+                
+                fetch('/api/form/' + formId + '/toggle-public-link', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled: isEnabled})
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Public link ' + (isEnabled ? 'enabled' : 'disabled') + ' successfully!');
+                        window.location.reload();
+                    } else {
+                        alert('Error: ' + data.error);
+                        document.getElementById('enablePublicLink').checked = !isEnabled;
+                    }
+                });
+            }
+            
+            function regenerateToken(formId) {
+                if (confirm('Regenerate share link? This will invalidate the previous link.')) {
+                    fetch('/api/form/' + formId + '/regenerate-token', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert('Share link regenerated successfully!');
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + data.error);
+                        }
+                    });
+                }
+            }
+        </script>
+        '''
+        
+        return html_wrapper('Share Form', content, get_navbar(), scripts)
+        
+    except Exception as e:
+        print(f"Share form error: {e}")
+        traceback.print_exc()
+        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+    
+@app.route('/api/form/<int:form_id>/toggle-public-link', methods=['POST'])
+@teacher_required
+def toggle_public_link(form_id):
+    """Toggle public link enabled/disabled"""
+    try:
+        data = request.json
+        enabled = data.get('enabled', False)
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Check permissions
+            cursor.execute('SELECT created_by FROM forms WHERE id = %s', (form_id,))
+            form = cursor.fetchone()
+            
+            if not form:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Form not found'})
+            
+            if form['created_by'] != session['user_id'] and session['role'] not in ['admin', 'super_admin']:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Access denied'})
+            
+            # Update public link status
+            cursor.execute('UPDATE forms SET public_link_enabled = %s WHERE id = %s', (enabled, form_id))
+            connection.commit()
+        
+        connection.close()
+        
+        # Create notification
+        status = 'enabled' if enabled else 'disabled'
+        create_notification(
+            user_id=session['user_id'],
+            title='Public Link Updated',
+            message=f'Public link has been {status} for the form.',
+            type='info',
+            link=f'/form/{form_id}/share'
+        )
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"Toggle public link error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/form/<int:form_id>/regenerate-token', methods=['POST'])
+@teacher_required
+def regenerate_token(form_id):
+    """Regenerate share token"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Check permissions
+            cursor.execute('SELECT created_by FROM forms WHERE id = %s', (form_id,))
+            form = cursor.fetchone()
+            
+            if not form:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Form not found'})
+            
+            if form['created_by'] != session['user_id'] and session['role'] not in ['admin', 'super_admin']:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Access denied'})
+            
+            # Generate new token
+            new_token = generate_share_token()
+            cursor.execute('UPDATE forms SET share_token = %s WHERE id = %s', (new_token, form_id))
+            connection.commit()
+        
+        connection.close()
+        
+        # Create notification
+        create_notification(
+            user_id=session['user_id'],
+            title='Share Link Regenerated',
+            message='Share link has been regenerated. Previous link is now invalid.',
+            type='warning',
+            link=f'/form/{form_id}/share'
+        )
+        
+        return jsonify({'success': True, 'new_token': new_token})
+    except Exception as e:
+        print(f"Regenerate token error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/public/form/<token>')
+def public_form_access(token):
+    """Public form access route - redirects to login if not authenticated"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT * FROM forms WHERE share_token = %s AND public_link_enabled = TRUE', (token,))
+            form = cursor.fetchone()
+        
+        connection.close()
+        
+        if not form:
+            return html_wrapper('Error', '''
+            <div class="alert alert-danger">
+                <h4>Form Not Found</h4>
+                <p>The requested form is not available or the link has expired.</p>
+                <a href="/login" class="btn btn-primary">Go to Login</a>
+            </div>
+            ''', '', '')
+        
+        # Check if user is logged in
+        if 'user_id' not in session:
+            # Store the form_id in session to redirect after login
+            session['redirect_after_login'] = f'/form/{form["id"]}/take'
+            return redirect('/login')
+        
+        # Check access based on request/assignment status
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # For students, check request status
+            if session['role'] == 'student':
+                cursor.execute('''
+                    SELECT fr.status as request_status
+                    FROM form_requests fr
+                    WHERE fr.form_id = %s AND fr.student_id = %s
+                ''', (form['id'], session['user_id']))
+                access_info = cursor.fetchone()
+                
+                # Check if already assigned
+                cursor.execute('''
+                    SELECT 1 FROM assignments WHERE form_id = %s AND student_id = %s
+                ''', (form['id'], session['user_id']))
+                assigned = cursor.fetchone()
+                
+                # Determine access
+                has_access = False
+                if assigned:
+                    has_access = True
+                elif access_info and access_info['request_status'] == 'approved':
+                    has_access = True
+                elif form['form_type'] == 'open' and form['department'] == session['department']:
+                    # Open forms from same department are accessible
+                    has_access = True
+                
+                if not has_access:
+                    connection.close()
+                    return html_wrapper('Error', f'''
+                    <div class="alert alert-danger">
+                        <h4>Access Required</h4>
+                        <p>You need to request access to this form first.</p>
+                        <button onclick="requestForm({form['id']})" class="btn btn-primary">Request Access</button>
+                        <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
+                    </div>
+                    ''', get_navbar(), '''
+                    <script>
+                        function requestForm(formId) {
+                            fetch('/request-form/' + formId, {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'}
+                            })
+                            .then(res => res.json())
+                            .then(data => {
+                                if (data.success) {
+                                    alert('Request submitted successfully!');
+                                    window.location.reload();
+                                } else {
+                                    alert('Error: ' + data.error);
+                                }
+                            });
+                        }
+                    </script>
+                    ''')
+        
+        connection.close()
+        
+        # Redirect to take form
+        return redirect(f'/form/{form["id"]}/take')
+        
+    except Exception as e:
+        print(f"Public form access error: {e}")
+        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', '')
+
 @app.route('/notifications')
 @login_required
 def notifications_page():
@@ -5449,26 +6021,10 @@ def mark_all_read():
         print(f"Error marking all notifications as read: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/api/notifications/<int:notification_id>/delete', methods=['DELETE'])
-@login_required
-def delete_notification(notification_id):
-    """Delete a specific notification"""
-    try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            cursor.execute('DELETE FROM notifications WHERE id = %s AND user_id = %s', 
-                          (notification_id, session['user_id']))
-            connection.commit()
-        connection.close()
-        return jsonify({'success': True})
-    except Exception as e:
-        print(f"Error deleting notification: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
 @app.route('/api/notifications/clear-all', methods=['DELETE'])
 @login_required
 def clear_all_notifications():
-    """Clear all notifications for user"""
+    """Clear all notifications for the user"""
     try:
         connection = get_db()
         with connection.cursor() as cursor:
@@ -5480,766 +6036,569 @@ def clear_all_notifications():
         print(f"Error clearing all notifications: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/api/student-details/<int:student_id>')
+@teacher_required
+def get_student_details(student_id):
+    """Get detailed student information for teacher analytics"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get student basic info
+            cursor.execute('''
+                SELECT u.name, u.email, u.department, u.created_at as joined_date
+                FROM users u
+                WHERE u.id = %s AND u.role = 'student'
+            ''', (student_id,))
+            student = cursor.fetchone()
+            
+            if not student:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Student not found'})
+            
+            # Get student form responses
+            cursor.execute('''
+                SELECT r.*, f.title, f.created_by as teacher_id, u2.name as teacher_name
+                FROM responses r
+                JOIN forms f ON r.form_id = f.id
+                LEFT JOIN users u2 ON f.created_by = u2.id
+                WHERE r.student_id = %s
+                ORDER BY r.submitted_at DESC
+            ''', (student_id,))
+            responses = cursor.fetchall()
+            
+            # Get assigned forms
+            cursor.execute('''
+                SELECT a.*, f.title, f.department, u.name as assigned_by_name
+                FROM assignments a
+                JOIN forms f ON a.form_id = f.id
+                JOIN users u ON a.assigned_by = u.id
+                WHERE a.student_id = %s
+                ORDER BY a.assigned_at DESC
+            ''', (student_id,))
+            assignments = cursor.fetchall()
+            
+            # Get form requests
+            cursor.execute('''
+                SELECT fr.*, f.title, f.department, u.name as reviewer_name
+                FROM form_requests fr
+                JOIN forms f ON fr.form_id = f.id
+                LEFT JOIN users u ON fr.approved_by = u.id
+                WHERE fr.student_id = %s
+                ORDER BY fr.requested_at DESC
+            ''', (student_id,))
+            requests = cursor.fetchall()
+            
+            # Calculate statistics
+            total_forms = len(responses)
+            avg_score = sum([r['percentage'] for r in responses]) / total_forms if total_forms > 0 else 0
+            passed_forms = len([r for r in responses if r['percentage'] >= 70])
+            failed_forms = total_forms - passed_forms
+        
+        connection.close()
+        
+        # Prepare response data
+        stats = {
+            'total_forms': total_forms,
+            'avg_score': round(avg_score, 1),
+            'passed_forms': passed_forms,
+            'failed_forms': failed_forms,
+            'completion_rate': round((len([a for a in assignments if a['is_completed']]) / len(assignments) * 100), 1) if assignments else 0
+        }
+        
+        # Generate HTML content for modal
+        html_content = f'''
+        <div class="container-fluid">
+            <div class="row mb-4">
+                <div class="col-md-12">
+                    <h4>Student Details: {student['name']}</h4>
+                    <p class="text-muted">
+                        <i class="fas fa-envelope me-2"></i>{student['email']} |
+                        <i class="fas fa-building me-2"></i>{student['department']} |
+                        <i class="fas fa-calendar me-2"></i>Joined: {student['joined_date'].strftime('%Y-%m-%d')}
+                    </p>
+                </div>
+            </div>
+            
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <div class="card bg-primary text-white">
+                        <div class="card-body text-center">
+                            <h6>Forms Taken</h6>
+                            <h3>{stats['total_forms']}</h3>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-success text-white">
+                        <div class="card-body text-center">
+                            <h6>Average Score</h6>
+                            <h3>{stats['avg_score']}%</h3>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-info text-white">
+                        <div class="card-body text-center">
+                            <h6>Pass Rate</h6>
+                            <h3>{round((stats['passed_forms']/stats['total_forms']*100), 1) if stats['total_forms'] > 0 else 0}%</h3>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card bg-warning text-white">
+                        <div class="card-body text-center">
+                            <h6>Completion Rate</h6>
+                            <h3>{stats['completion_rate']}%</h3>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h6 class="mb-0">Recent Form Responses ({len(responses)})</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Form</th>
+                                            <th>Score</th>
+                                            <th>Status</th>
+                                            <th>Date</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+        '''
+        
+        for response in responses[:5]:  # Show only 5 most recent
+            score_class = 'success' if response['percentage'] >= 70 else 'warning' if response['percentage'] >= 50 else 'danger'
+            html_content += f'''
+                                        <tr>
+                                            <td>{response['title']}</td>
+                                            <td><span class="badge bg-{score_class}">{response['score']}/{response['total_marks']}</span></td>
+                                            <td>{response['percentage']}%</td>
+                                            <td>{response['submitted_at'].strftime('%Y-%m-%d')}</td>
+                                        </tr>
+            '''
+        
+        html_content += '''
+                                    </tbody>
+                                </table>
+                            </div>
+                            {f'<p class="text-center"><a href="#" onclick="viewAllResponses({student_id})">View All Responses</a></p>' if len(responses) > 5 else ''}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h6 class="mb-0">Current Assignments ({len(assignments)})</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Form</th>
+                                            <th>Status</th>
+                                            <th>Assigned By</th>
+                                            <th>Due Date</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+        '''
+        
+        for assignment in assignments[:5]:  # Show only 5 most recent
+            status_badge = 'success' if assignment['is_completed'] else 'warning'
+            status_text = 'Completed' if assignment['is_completed'] else 'Pending'
+            due_date = assignment['due_date'].strftime('%Y-%m-%d') if assignment['due_date'] else 'No due date'
+            
+            html_content += f'''
+                                        <tr>
+                                            <td>{assignment['title']}</td>
+                                            <td><span class="badge bg-{status_badge}">{status_text}</span></td>
+                                            <td>{assignment['assigned_by_name']}</td>
+                                            <td>{due_date}</td>
+                                        </tr>
+            '''
+        
+        html_content += '''
+                                    </tbody>
+                                </table>
+                            </div>
+                            {f'<p class="text-center"><a href="#" onclick="viewAllAssignments({student_id})">View All Assignments</a></p>' if len(assignments) > 5 else ''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row mt-3">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h6 class="mb-0">Form Access Requests ({len(requests)})</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Form</th>
+                                            <th>Department</th>
+                                            <th>Status</th>
+                                            <th>Requested</th>
+                                            <th>Reviewed By</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+        '''
+        
+        for request in requests[:5]:  # Show only 5 most recent
+            status_badge = 'success' if request['status'] == 'approved' else 'danger' if request['status'] == 'rejected' else 'warning'
+            reviewed_by = request['reviewer_name'] or 'Pending'
+            
+            html_content += f'''
+                                        <tr>
+                                            <td>{request['title']}</td>
+                                            <td>{request['department']}</td>
+                                            <td><span class="badge bg-{status_badge}">{request['status'].title()}</span></td>
+                                            <td>{request['requested_at'].strftime('%Y-%m-%d')}</td>
+                                            <td>{reviewed_by}</td>
+                                        </tr>
+            '''
+        
+        html_content += '''
+                                    </tbody>
+                                </table>
+                            </div>
+                            {f'<p class="text-center"><a href="#" onclick="viewAllRequests({student_id})">View All Requests</a></p>' if len(requests) > 5 else ''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            function viewAllResponses(studentId) {
+                // Implement view all responses functionality
+                alert('View all responses for student ' + studentId);
+            }
+            
+            function viewAllAssignments(studentId) {
+                // Implement view all assignments functionality
+                alert('View all assignments for student ' + studentId);
+            }
+            
+            function viewAllRequests(studentId) {
+                // Implement view all requests functionality
+                alert('View all requests for student ' + studentId);
+            }
+        </script>
+        '''
+        
+        return jsonify({
+            'success': True,
+            'html': html_content,
+            'stats': stats
+        })
+        
+    except Exception as e:
+        print(f"Error getting student details: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/admin')
 @admin_required
 def admin_panel():
+    """Admin panel for system management"""
     try:
-        # Get selected department from query parameter
-        selected_dept = request.args.get('department', '')
-        
         connection = get_db()
         with connection.cursor() as cursor:
-            # Get overall statistics
+            # Get system statistics
             cursor.execute('''
                 SELECT 
-                    (SELECT COUNT(*) FROM users) as total_users,
-                    (SELECT COUNT(*) FROM users WHERE role = 'student') as students,
-                    (SELECT COUNT(*) FROM users WHERE role = 'teacher') as teachers,
-                    (SELECT COUNT(*) FROM forms) as forms,
-                    (SELECT COUNT(*) FROM responses) as responses,
-                    (SELECT COUNT(*) FROM form_requests WHERE status = 'pending') as pending_requests,
-                    (SELECT COUNT(*) FROM forms WHERE is_student_submission = TRUE AND review_status = 'pending') as pending_reviews
+                    COUNT(DISTINCT id) as total_users,
+                    SUM(CASE WHEN role = 'student' THEN 1 ELSE 0 END) as total_students,
+                    SUM(CASE WHEN role = 'teacher' THEN 1 ELSE 0 END) as total_teachers,
+                    SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) as total_admins,
+                    SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END) as total_super_admins
+                FROM users
             ''')
-            stats = cursor.fetchone()
+            user_stats = cursor.fetchone()
             
-            # Get department-wise user statistics
             cursor.execute('''
-                SELECT department, 
-                       COUNT(*) as total_users,
-                       SUM(CASE WHEN role = 'student' THEN 1 ELSE 0 END) as students,
-                       SUM(CASE WHEN role = 'teacher' THEN 1 ELSE 0 END) as teachers,
-                       SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) as admins
-                FROM users 
+                SELECT 
+                    COUNT(DISTINCT id) as total_forms,
+                    SUM(CASE WHEN is_student_submission = TRUE THEN 1 ELSE 0 END) as student_forms,
+                    SUM(CASE WHEN review_status = 'approved' THEN 1 ELSE 0 END) as approved_forms,
+                    SUM(CASE WHEN review_status = 'pending' THEN 1 ELSE 0 END) as pending_forms,
+                    SUM(CASE WHEN review_status = 'rejected' THEN 1 ELSE 0 END) as rejected_forms,
+                    SUM(CASE WHEN form_type = 'open' THEN 1 ELSE 0 END) as open_forms,
+                    SUM(CASE WHEN form_type = 'confidential' THEN 1 ELSE 0 END) as confidential_forms
+                FROM forms
+            ''')
+            form_stats = cursor.fetchone()
+            
+            cursor.execute('''
+                SELECT 
+                    COUNT(DISTINCT id) as total_responses,
+                    AVG(percentage) as avg_score,
+                    MAX(percentage) as highest_score,
+                    MIN(percentage) as lowest_score,
+                    SUM(CASE WHEN percentage >= 70 THEN 1 ELSE 0 END) as passed_responses,
+                    SUM(CASE WHEN percentage < 70 THEN 1 ELSE 0 END) as failed_responses
+                FROM responses
+            ''')
+            response_stats = cursor.fetchone()
+            
+            cursor.execute('''
+                SELECT 
+                    COUNT(DISTINCT id) as total_assignments,
+                    SUM(CASE WHEN is_completed = TRUE THEN 1 ELSE 0 END) as completed_assignments,
+                    SUM(CASE WHEN is_completed = FALSE THEN 1 ELSE 0 END) as pending_assignments
+                FROM assignments
+            ''')
+            assignment_stats = cursor.fetchone()
+            
+            cursor.execute('''
+                SELECT 
+                    COUNT(DISTINCT id) as total_requests,
+                    SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved_requests,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_requests,
+                    SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_requests
+                FROM form_requests
+            ''')
+            request_stats = cursor.fetchone()
+            
+            # Get department-wise statistics
+            cursor.execute('''
+                SELECT 
+                    department,
+                    COUNT(DISTINCT id) as user_count,
+                    SUM(CASE WHEN role = 'student' THEN 1 ELSE 0 END) as students,
+                    SUM(CASE WHEN role = 'teacher' THEN 1 ELSE 0 END) as teachers
+                FROM users
+                WHERE role IN ('student', 'teacher')
                 GROUP BY department
                 ORDER BY department
             ''')
-            dept_user_stats = cursor.fetchall()
+            dept_stats = cursor.fetchall()
             
-            # Get forms by department with filter
-            query = '''
-                SELECT department, COUNT(*) as form_count, 
-                       SUM(CASE WHEN form_type = 'open' THEN 1 ELSE 0 END) as open_forms,
-                       SUM(CASE WHEN form_type = 'confidential' THEN 1 ELSE 0 END) as confidential_forms,
-                       SUM(CASE WHEN is_student_submission = TRUE THEN 1 ELSE 0 END) as student_forms,
-                       SUM(CASE WHEN review_status = 'approved' THEN 1 ELSE 0 END) as approved_forms
-                FROM forms 
-            '''
-            params = []
-            
-            if selected_dept:
-                query += ' WHERE department = %s'
-                params.append(selected_dept)
-            
-            query += ' GROUP BY department ORDER BY department'
-            cursor.execute(query, params)
-            form_stats = cursor.fetchall()
-            
-            # Recent activities with department filter
-            query = '''
-                SELECT u.name, f.title, fr.status, fr.requested_at, fr.approved_at, f.department
-                FROM form_requests fr
-                JOIN users u ON fr.student_id = u.id
-                JOIN forms f ON fr.form_id = f.id
-            '''
-            params = []
-            
-            if selected_dept:
-                query += ' WHERE f.department = %s'
-                params.append(selected_dept)
-            
-            query += ' ORDER BY fr.requested_at DESC LIMIT 10'
-            cursor.execute(query, params)
-            recent_activities = cursor.fetchall()
-            
-            # Recent forms with department filter
-            query = '''
-                SELECT f.title, f.department, f.form_type, f.is_student_submission, u.name as creator, f.created_at
+            # Get recent activities
+            cursor.execute('''
+                (SELECT 
+                    'form_created' as type,
+                    f.title as description,
+                    u.name as user_name,
+                    f.created_at as timestamp,
+                    CONCAT('/form/', f.id, '/edit') as link
                 FROM forms f
                 JOIN users u ON f.created_by = u.id
-            '''
-            params = []
+                ORDER BY f.created_at DESC
+                LIMIT 5)
+                
+                UNION ALL
+                
+                (SELECT 
+                    'response_submitted' as type,
+                    CONCAT('Submitted form: ', f.title) as description,
+                    u.name as user_name,
+                    r.submitted_at as timestamp,
+                    CONCAT('/form/', f.id, '/responses') as link
+                FROM responses r
+                JOIN forms f ON r.form_id = f.id
+                JOIN users u ON r.student_id = u.id
+                ORDER BY r.submitted_at DESC
+                LIMIT 5)
+                
+                UNION ALL
+                
+                (SELECT 
+                    'user_registered' as type,
+                    CONCAT('New ', role, ' registered') as description,
+                    name as user_name,
+                    created_at as timestamp,
+                    '#' as link
+                FROM users
+                ORDER BY created_at DESC
+                LIMIT 5)
+                
+                ORDER BY timestamp DESC
+                LIMIT 10
+            ''')
+            recent_activities = cursor.fetchall()
             
-            if selected_dept:
-                query += ' WHERE f.department = %s'
-                params.append(selected_dept)
-            
-            query += ' ORDER BY f.created_at DESC LIMIT 10'
-            cursor.execute(query, params)
-            recent_forms = cursor.fetchall()
+            # Get system information
+            cursor.execute('SELECT VERSION() as mysql_version')
+            mysql_version = cursor.fetchone()['mysql_version']
             
         connection.close()
         
-        # Department filter for admin
-        departments_options = '<option value="">All Departments</option>'
-        for dept in DEPARTMENTS:
-            selected = 'selected' if dept == selected_dept else ''
-            departments_options += f'<option value="{dept}" {selected}>{dept}</option>'
+        # Format Decimal values
+        def format_decimal(value):
+            return round(float(value), 2) if value else 0
         
-        dept_filter_html = f'''
-        <div class="dept-filter mb-4">
-            <h5 class="mb-3">Department Filter</h5>
-            <form method="GET" action="/admin" class="row align-items-center">
-                <div class="col-md-4">
-                    <select class="form-select" name="department" onchange="this.form.submit()">
-                        {departments_options}
-                    </select>
-                </div>
-                <div class="col-md-8">
-                    <small class="text-muted">
-                        Showing data for: {selected_dept if selected_dept else "All Departments"}
-                    </small>
-                </div>
-            </form>
-        </div>
-        '''
-        
-        dept_user_html = ''
-        for stat in dept_user_stats:
-            dept_user_html += f'''
+        # Department statistics HTML
+        dept_stats_html = ''
+        for dept in dept_stats:
+            dept_stats_html += f'''
             <tr>
-                <td><a href="/admin/users?department={stat['department']}" class="text-decoration-none">{stat['department']}</a></td>
-                <td>{stat['total_users']}</td>
-                <td>{stat['students']}</td>
-                <td>{stat['teachers']}</td>
-                <td>{stat['admins']}</td>
+                <td>{dept['department']}</td>
+                <td>{dept['user_count']}</td>
+                <td>{dept['students']}</td>
+                <td>{dept['teachers']}</td>
+                <td>
+                    <a href="/dashboard?department={dept['department']}" class="btn btn-sm btn-outline-primary">
+                        View Forms
+                    </a>
+                </td>
             </tr>
             '''
         
-        form_stats_html = ''
-        for stat in form_stats:
-            form_stats_html += f'''
-            <tr>
-                <td><a href="/admin/forms?department={stat['department']}" class="text-decoration-none">{stat['department']}</a></td>
-                <td>{stat['form_count']}</td>
-                <td>{stat['open_forms']}</td>
-                <td>{stat['confidential_forms']}</td>
-                <td>{stat['student_forms']}</td>
-                <td>{stat['approved_forms']}</td>
-            </tr>
-            '''
-        
+        # Recent activities HTML
         recent_activities_html = ''
         for activity in recent_activities:
-            status_badge = 'success' if activity['status'] == 'approved' else 'warning' if activity['status'] == 'pending' else 'danger'
+            icon = {
+                'form_created': 'fa-file-alt text-primary',
+                'response_submitted': 'fa-paper-plane text-success',
+                'user_registered': 'fa-user-plus text-info'
+            }.get(activity['type'], 'fa-info-circle')
+            
+            time_ago = get_time_ago(activity['timestamp'])
+            link = 'javascript:void(0)' if activity['link'] == '#' else activity['link']
+            
             recent_activities_html += f'''
-            <tr>
-                <td>{activity['name']}</td>
-                <td>{activity['title']}</td>
-                <td>{activity['department']}</td>
-                <td><span class="badge bg-{status_badge}">{activity['status'].upper()}</span></td>
-                <td>{activity['requested_at']}</td>
-                <td>{activity['approved_at'] or 'N/A'}</td>
-            </tr>
-            '''
-        
-        recent_forms_html = ''
-        for form in recent_forms:
-            type_badge = 'info' if form['form_type'] == 'open' else 'purple'
-            student_badge = '<span class="badge student-stats-card">Student</span>' if form['is_student_submission'] else ''
-            recent_forms_html += f'''
-            <tr>
-                <td>{form['title']} {student_badge}</td>
-                <td>{form['department']}</td>
-                <td><span class="badge bg-{type_badge}">{form['form_type'].title()}</span></td>
-                <td>{form['creator']}</td>
-                <td>{form['created_at']}</td>
-            </tr>
+            <div class="d-flex mb-3">
+                <div class="flex-shrink-0">
+                    <i class="fas {icon} fa-2x"></i>
+                </div>
+                <div class="flex-grow-1 ms-3">
+                    <h6 class="mb-1">{activity['description']}</h6>
+                    <p class="mb-0 text-muted">By {activity['user_name']}</p>
+                    <small class="text-muted">{time_ago}</small>
+                    {f'<a href="{link}" class="btn btn-sm btn-outline-primary mt-1">View</a>' if activity['link'] != '#' else ''}
+                </div>
+            </div>
             '''
         
         content = f'''
-        <h2 class="mb-4 text-white">Admin Dashboard</h2>
-        
-        {dept_filter_html}
-        
-        <div class="row mb-4">
-            <div class="col-md-2">
-                <a href="/admin/users" class="text-decoration-none">
-                    <div class="stat-card" style="background: linear-gradient(45deg, #667eea, #764ba2); cursor: pointer;" 
-                         onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                        <h5>Users</h5>
-                        <h2>{stats['total_users']}</h2>
-                    </div>
-                </a>
-            </div>
-            <div class="col-md-2">
-                <a href="/admin/users?role=student" class="text-decoration-none">
-                    <div class="stat-card" style="background: linear-gradient(45deg, #10b981, #059669); cursor: pointer;"
-                         onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                        <h5>Students</h5>
-                        <h2>{stats['students']}</h2>
-                    </div>
-                </a>
-            </div>
-            <div class="col-md-2">
-                <a href="/admin/users?role=teacher" class="text-decoration-none">
-                    <div class="stat-card" style="background: linear-gradient(45deg, #f59e0b, #d97706); cursor: pointer;"
-                         onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                        <h5>Teachers</h5>
-                        <h2>{stats['teachers']}</h2>
-                    </div>
-                </a>
-            </div>
-            <div class="col-md-2">
-                <a href="/admin/forms" class="text-decoration-none">
-                    <div class="stat-card" style="background: linear-gradient(45deg, #3b82f6, #1d4ed8); cursor: pointer;"
-                         onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                        <h5>Forms</h5>
-                        <h2>{stats['forms']}</h2>
-                    </div>
-                </a>
-            </div>
-            <div class="col-md-2">
-                <a href="/form-requests" class="text-decoration-none">
-                    <div class="stat-card" style="background: linear-gradient(45deg, #8b5cf6, #7c3aed); cursor: pointer;"
-                         onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                        <h5>Pending Requests</h5>
-                        <h2>{stats['pending_requests']}</h2>
-                    </div>
-                </a>
-            </div>
-            <div class="col-md-2">
-                <a href="/review-forms" class="text-decoration-none">
-                    <div class="stat-card" style="background: linear-gradient(45deg, #ef4444, #dc2626); cursor: pointer;"
-                         onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                        <h5>Pending Reviews</h5>
-                        <h2>{stats['pending_reviews']}</h2>
-                    </div>
-                </a>
-            </div>
+        <div class="mb-4">
+            <h2 class="text-white">Admin Panel</h2>
+            <p class="text-white-50">System Administration and Monitoring</p>
         </div>
         
         <div class="row mb-4">
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5>Recent Activities</h5>
-                        <a href="/form-requests" class="btn btn-sm btn-primary">View All</a>
-                    </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>Student</th>
-                                        <th>Form</th>
-                                        <th>Dept</th>
-                                        <th>Status</th>
-                                        <th>Requested</th>
-                                        <th>Approved</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {recent_activities_html}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
+            <div class="col-md-3">
+                <div class="stat-card" style="background: linear-gradient(45deg, #667eea, #764ba2);">
+                    <h5>Total Users</h5>
+                    <h2>{user_stats['total_users'] or 0}</h2>
+                    <small>Students: {user_stats['total_students'] or 0}</small><br>
+                    <small>Teachers: {user_stats['total_teachers'] or 0}</small><br>
+                    <small>Admins: {user_stats['total_admins'] or 0}</small>
                 </div>
             </div>
+            <div class="col-md-3">
+                <div class="stat-card" style="background: linear-gradient(45deg, #10b981, #059669);">
+                    <h5>Total Forms</h5>
+                    <h2>{form_stats['total_forms'] or 0}</h2>
+                    <small>Student Forms: {form_stats['student_forms'] or 0}</small><br>
+                    <small>Open: {form_stats['open_forms'] or 0}</small><br>
+                    <small>Confidential: {form_stats['confidential_forms'] or 0}</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card" style="background: linear-gradient(45deg, #3b82f6, #1d4ed8);">
+                    <h5>Total Responses</h5>
+                    <h2>{response_stats['total_responses'] or 0}</h2>
+                    <small>Avg Score: {format_decimal(response_stats['avg_score'])}%</small><br>
+                    <small>Passed: {response_stats['passed_responses'] or 0}</small><br>
+                    <small>Failed: {response_stats['failed_responses'] or 0}</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card" style="background: linear-gradient(45deg, #8b5cf6, #7c3aed);">
+                    <h5>System Status</h5>
+                    <h2><i class="fas fa-check-circle"></i> Active</h2>
+                    <small>MySQL: {mysql_version}</small><br>
+                    <small>Emails: {'Enabled' if ENABLE_EMAIL_NOTIFICATIONS else 'Disabled'}</small><br>
+                    <small>Forms Pending: {form_stats['pending_forms'] or 0}</small>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row">
             <div class="col-md-6">
                 <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5>Recently Created Forms</h5>
-                        <a href="/admin/forms" class="btn btn-sm btn-primary">View All</a>
+                    <div class="card-header">
+                        <h5 class="mb-0">Department Statistics</h5>
                     </div>
                     <div class="card-body">
                         <div class="table-responsive">
-                            <table class="table table-sm">
+                            <table class="table">
                                 <thead>
                                     <tr>
-                                        <th>Title</th>
                                         <th>Department</th>
-                                        <th>Type</th>
-                                        <th>Creator</th>
-                                        <th>Created</th>
+                                        <th>Total Users</th>
+                                        <th>Students</th>
+                                        <th>Teachers</th>
+                                        <th>Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {recent_forms_html}
+                                    {dept_stats_html}
                                 </tbody>
                             </table>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
-        
-        <div class="row">
+            
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-header">
-                        <h5>Department-wise User Statistics</h5>
+                        <h5 class="mb-0">Recent Activities</h5>
                     </div>
                     <div class="card-body">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>Department</th>
-                                    <th>Total Users</th>
-                                    <th>Students</th>
-                                    <th>Teachers</th>
-                                    <th>Admins</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {dept_user_html}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>Department-wise Form Statistics</h5>
-                    </div>
-                    <div class="card-body">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>Department</th>
-                                    <th>Total Forms</th>
-                                    <th>Open Forms</th>
-                                    <th>Confidential</th>
-                                    <th>Student Forms</th>
-                                    <th>Approved</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {form_stats_html}
-                            </tbody>
-                        </table>
+                        {recent_activities_html}
                     </div>
                 </div>
             </div>
         </div>
-        '''
         
-        return html_wrapper('Admin Panel', content, get_navbar(), '')
-        
-    except Exception as e:
-        print(f"Admin panel error: {e}")
-        traceback.print_exc()
-        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
-
-@app.route('/admin/users')
-@admin_required
-def admin_users():
-    try:
-        role_filter = request.args.get('role', '')
-        department_filter = request.args.get('department', '')
-        
-        connection = get_db()
-        with connection.cursor() as cursor:
-            query = 'SELECT * FROM users WHERE 1=1'
-            params = []
-            
-            if role_filter:
-                query += ' AND role = %s'
-                params.append(role_filter)
-            
-            if department_filter:
-                query += ' AND department = %s'
-                params.append(department_filter)
-            
-            query += ' ORDER BY created_at DESC'
-            cursor.execute(query, params)
-            users = cursor.fetchall()
-        
-        connection.close()
-        
-        # Department filter
-        departments_options = '<option value="">All Departments</option>'
-        for dept in DEPARTMENTS:
-            selected = 'selected' if dept == department_filter else ''
-            departments_options += f'<option value="{dept}" {selected}>{dept}</option>'
-        
-        # Role filter
-        roles_options = '<option value="">All Roles</option>'
-        roles = ['student', 'teacher', 'admin']
-        for role in roles:
-            selected = 'selected' if role == role_filter else ''
-            roles_options += f'<option value="{role}" {selected}>{role.title()}</option>'
-        
-        filter_html = f'''
-        <div class="dept-filter mb-4">
-            <h5 class="mb-3">Filter Users</h5>
-            <form method="GET" action="/admin/users" class="row g-3">
-                <div class="col-md-4">
-                    <select class="form-select" name="department">
-                        {departments_options}
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <select class="form-select" name="role">
-                        {roles_options}
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <button type="submit" class="btn btn-primary w-100">Apply Filters</button>
-                </div>
-            </form>
-        </div>
-        '''
-        
-        users_html = ''
-        for user in users:
-            role_badge = 'danger' if user['role'] == 'admin' else 'warning' if user['role'] == 'teacher' else 'info'
-            users_html += f'''
-            <tr>
-                <td>{user['id']}</td>
-                <td>{user['name']}</td>
-                <td>{user['email']}</td>
-                <td><span class="badge bg-{role_badge}">{user['role'].upper()}</span></td>
-                <td>{user['department']}</td>
-                <td>{user['created_at']}</td>
-            </tr>
-            '''
-        
-        content = f'''
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2 class="text-white">Users Management</h2>
-            <a href="/admin" class="btn btn-secondary">Back to Admin</a>
-        </div>
-        
-        {filter_html}
-        
-        <div class="card">
-            <div class="card-header">
-                <h5>All Users ({len(users)})</h5>
-                <p class="mb-0 text-muted">
-                    Showing: {role_filter if role_filter else 'All Roles'} | 
-                    {department_filter if department_filter else 'All Departments'}
-                </p>
-            </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Name</th>
-                                <th>Email</th>
-                                <th>Role</th>
-                                <th>Department</th>
-                                <th>Created</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {users_html}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        '''
-        
-        return html_wrapper('Users Management', content, get_navbar(), '')
-        
-    except Exception as e:
-        print(f"Admin users error: {e}")
-        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
-
-@app.route('/admin/forms')
-@admin_required
-def admin_forms():
-    try:
-        department_filter = request.args.get('department', '')
-        
-        connection = get_db()
-        with connection.cursor() as cursor:
-            query = '''
-                SELECT f.*, u.name as creator_name, u.department as creator_department,
-                       (SELECT COUNT(*) FROM responses WHERE form_id = f.id) as response_count,
-                       u2.name as reviewer_name
-                FROM forms f 
-                JOIN users u ON f.created_by = u.id 
-                LEFT JOIN users u2 ON f.reviewed_by = u2.id
-                WHERE 1=1
-            '''
-            params = []
-            
-            if department_filter:
-                query += ' AND f.department = %s'
-                params.append(department_filter)
-            
-            query += ' ORDER BY f.created_at DESC'
-            cursor.execute(query, params)
-            forms = cursor.fetchall()
-        
-        connection.close()
-        
-        # Department filter
-        departments_options = '<option value="">All Departments</option>'
-        for dept in DEPARTMENTS:
-            selected = 'selected' if dept == department_filter else ''
-            departments_options += f'<option value="{dept}" {selected}>{dept}</option>'
-        
-        filter_html = f'''
-        <div class="dept-filter mb-4">
-            <h5 class="mb-3">Filter Forms</h5>
-            <form method="GET" action="/admin/forms" class="row g-3">
-                <div class="col-md-6">
-                    <select class="form-select" name="department">
-                        {departments_options}
-                    </select>
-                </div>
-                <div class="col-md-6">
-                    <button type="submit" class="btn btn-primary w-100">Apply Filter</button>
-                </div>
-            </form>
-        </div>
-        '''
-        
-        forms_html = ''
-        for form in forms:
-            status_badge = 'success' if form['is_published'] else 'warning'
-            type_badge = 'info' if form['form_type'] == 'open' else 'purple'
-            student_badge = '<span class="badge student-stats-card">Student</span>' if form['is_student_submission'] else ''
-            review_badge = ''
-            if form['is_student_submission']:
-                if form['review_status'] == 'approved':
-                    review_badge = '<span class="badge bg-success">Approved</span>'
-                elif form['review_status'] == 'pending':
-                    review_badge = '<span class="badge bg-warning">Pending Review</span>'
-                elif form['review_status'] == 'rejected':
-                    review_badge = '<span class="badge bg-danger">Rejected</span>'
-            
-            forms_html += f'''
-            <tr>
-                <td>{form['id']}</td>
-                <td>
-                    <strong>{form['title']}</strong>
-                    {student_badge}
-                    <br><small>{form['description'][:50] if form['description'] else 'No description'}...</small>
-                </td>
-                <td>{form['creator_name']}</td>
-                <td>{form['department']}</td>
-                <td>
-                    <span class="badge bg-{type_badge}">{form['form_type'].title()}</span><br>
-                    <span class="badge bg-{status_badge}">{'Published' if form['is_published'] else 'Draft'}</span>
-                    {review_badge}
-                </td>
-                <td>{form['response_count']}</td>
-                <td>
-                    <div class="btn-group btn-group-sm">
-                        <a href="/form/{form['id']}/edit" class="btn btn-outline-primary">Edit</a>
-                        <a href="/form/{form['id']}/responses" class="btn btn-outline-success">Results</a>
-                        <a href="/form/{form['id']}/assign" class="btn btn-outline-warning">Assign</a>
-                    </div>
-                </td>
-            </tr>
-            '''
-        
-        content = f'''
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2 class="text-white">Forms Management</h2>
-            <a href="/admin" class="btn btn-secondary">Back to Admin</a>
-        </div>
-        
-        {filter_html}
-        
-        <div class="card">
-            <div class="card-header">
-                <h5>All Forms ({len(forms)})</h5>
-                <p class="mb-0 text-muted">
-                    Showing forms from: {department_filter if department_filter else 'All Departments'}
-                </p>
-            </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Form Details</th>
-                                <th>Creator</th>
-                                <th>Department</th>
-                                <th>Type & Status</th>
-                                <th>Responses</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {forms_html}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        '''
-        
-        return html_wrapper('Forms Management', content, get_navbar(), '')
-        
-    except Exception as e:
-        print(f"Admin forms error: {e}")
-        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
-
-@app.route('/admin/test')
-@admin_required
-def admin_test():
-    """Admin testing page to verify system functionality"""
-    try:
-        connection = get_db()
-        
-        # Test database connectivity
-        db_status = "✅ Connected"
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute('SELECT 1')
-                db_test = cursor.fetchone()
-        except Exception as e:
-            db_status = f"❌ Error: {str(e)}"
-        
-        # Test email functionality
-        email_status = "✅ Ready"
-        if not ENABLE_EMAIL_NOTIFICATIONS:
-            email_status = "⚠️ Disabled (ENABLE_EMAIL_NOTIFICATIONS = False)"
-        else:
-            try:
-                # Test email configuration
-                with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
-                    server.starttls()
-                    server.login(EMAIL_USER, EMAIL_PASSWORD)
-                    email_status = "✅ Configured correctly"
-            except Exception as e:
-                email_status = f"❌ Error: {str(e)}"
-        
-        # Test system tables
-        tables_status = "✅ All tables exist"
-        missing_tables = []
-        required_tables = ['users', 'forms', 'form_requests', 'assignments', 'responses', 'student_form_reviews', 'notifications']
-        
-        with connection.cursor() as cursor:
-            for table in required_tables:
-                cursor.execute(f"SHOW TABLES LIKE '{table}'")
-                if not cursor.fetchone():
-                    missing_tables.append(table)
-        
-        if missing_tables:
-            tables_status = f"❌ Missing tables: {', '.join(missing_tables)}"
-        
-        # Get system statistics
-        stats = {}
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT COUNT(*) as count FROM users')
-            stats['users'] = cursor.fetchone()['count']
-            
-            cursor.execute('SELECT COUNT(*) as count FROM forms')
-            stats['forms'] = cursor.fetchone()['count']
-            
-            cursor.execute('SELECT COUNT(*) as count FROM responses')
-            stats['responses'] = cursor.fetchone()['count']
-            
-            cursor.execute('SELECT COUNT(*) as count FROM notifications')
-            stats['notifications'] = cursor.fetchone()['count']
-            
-            cursor.execute('SELECT COUNT(DISTINCT department) as count FROM users')
-            stats['departments'] = cursor.fetchone()['count']
-        
-        connection.close()
-        
-        content = f'''
-        <div class="row">
+        <div class="row mt-4">
             <div class="col-md-12">
                 <div class="card">
-                    <div class="card-header bg-primary text-white">
-                        <h3 class="mb-0">System Test & Diagnostics</h3>
+                    <div class="card-header">
+                        <h5 class="mb-0">Quick Actions</h5>
                     </div>
                     <div class="card-body">
-                        <h4>System Status</h4>
-                        <table class="table table-bordered">
-                            <tr>
-                                <th width="30%">Database Connection</th>
-                                <td>{db_status}</td>
-                            </tr>
-                            <tr>
-                                <th>Email System</th>
-                                <td>{email_status}</td>
-                            </tr>
-                            <tr>
-                                <th>Database Tables</th>
-                                <td>{tables_status}</td>
-                            </tr>
-                            <tr>
-                                <th>Notifications System</th>
-                                <td>✅ Integrated with all user actions</td>
-                            </tr>
-                        </table>
-                        
-                        <h4 class="mt-4">System Statistics</h4>
                         <div class="row">
-                            <div class="col-md-2">
-                                <div class="stat-card" style="background: linear-gradient(45deg, #667eea, #764ba2);">
-                                    <h5>Total Users</h5>
-                                    <h2>{stats['users']}</h2>
-                                </div>
+                            <div class="col-md-3 mb-3">
+                                <a href="/admin/test" class="btn btn-outline-primary w-100">
+                                    <i class="fas fa-vial me-2"></i>System Test
+                                </a>
                             </div>
-                            <div class="col-md-2">
-                                <div class="stat-card" style="background: linear-gradient(45deg, #10b981, #059669);">
-                                    <h5>Total Forms</h5>
-                                    <h2>{stats['forms']}</h2>
-                                </div>
+                            <div class="col-md-3 mb-3">
+                                <a href="/review-forms" class="btn btn-outline-warning w-100">
+                                    <i class="fas fa-check-circle me-2"></i>Review Forms
+                                    {f'<span class="badge bg-danger ms-2">{form_stats["pending_forms"] or 0}</span>' if form_stats['pending_forms'] else ''}
+                                </a>
                             </div>
-                            <div class="col-md-2">
-                                <div class="stat-card" style="background: linear-gradient(45deg, #3b82f6, #1d4ed8);">
-                                    <h5>Total Responses</h5>
-                                    <h2>{stats['responses']}</h2>
-                                </div>
+                            <div class="col-md-3 mb-3">
+                                <a href="/form-requests" class="btn btn-outline-info w-100">
+                                    <i class="fas fa-clock me-2"></i>Pending Requests
+                                    {f'<span class="badge bg-danger ms-2">{request_stats["pending_requests"] or 0}</span>' if request_stats['pending_requests'] else ''}
+                                </a>
                             </div>
-                            <div class="col-md-2">
-                                <div class="stat-card" style="background: linear-gradient(45deg, #f59e0b, #d97706);">
-                                    <h5>Notifications</h5>
-                                    <h2>{stats['notifications']}</h2>
-                                </div>
+                            <div class="col-md-3 mb-3">
+                                <button onclick="exportSystemData()" class="btn btn-outline-success w-100">
+                                    <i class="fas fa-download me-2"></i>Export Data
+                                </button>
                             </div>
-                            <div class="col-md-2">
-                                <div class="stat-card" style="background: linear-gradient(45deg, #8b5cf6, #7c3aed);">
-                                    <h5>Departments</h5>
-                                    <h2>{stats['departments']}</h2>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <h4 class="mt-4">Test Actions</h4>
-                        <div class="row">
-                            <div class="col-md-4">
-                                <div class="card">
-                                    <div class="card-body">
-                                        <h5>Test Email System</h5>
-                                        <p>Send a test email to verify email configuration.</p>
-                                        <button onclick="sendTestEmail()" class="btn btn-primary">
-                                            <i class="fas fa-envelope me-2"></i>Send Test Email
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <div class="card">
-                                    <div class="card-body">
-                                        <h5>Test Notifications</h5>
-                                        <p>Send a test notification to yourself.</p>
-                                        <button onclick="sendTestNotification()" class="btn btn-warning">
-                                            <i class="fas fa-bell me-2"></i>Test Notification
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <div class="card">
-                                    <div class="card-body">
-                                        <h5>Database Repair</h5>
-                                        <p>Reinitialize database tables if needed.</p>
-                                        <button onclick="repairDatabase()" class="btn btn-danger">
-                                            <i class="fas fa-database me-2"></i>Repair Database
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="mt-4">
-                            <a href="/admin" class="btn btn-secondary">Back to Admin Panel</a>
                         </div>
                     </div>
                 </div>
@@ -6249,52 +6608,351 @@ def admin_test():
         
         scripts = '''
         <script>
-            function sendTestEmail() {
-                fetch('/api/test-email', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'}
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('Test email sent successfully! Check your inbox.');
-                    } else {
-                        alert('Error: ' + data.error);
-                    }
-                });
-            }
-            
-            function sendTestNotification() {
-                fetch('/api/test-notification', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'}
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('Test notification sent successfully! Check your notification bell.');
-                    } else {
-                        alert('Error: ' + data.error);
-                    }
-                });
-            }
-            
-            function repairDatabase() {
-                if (confirm('This will recreate all database tables. Continue?')) {
-                    fetch('/api/repair-database', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'}
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            alert('Database repaired successfully!');
-                            window.location.reload();
-                        } else {
-                            alert('Error: ' + data.error);
-                        }
-                    });
+            function exportSystemData() {
+                if (confirm('Export all system data as CSV?')) {
+                    fetch('/admin/export-data')
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success) {
+                                alert('Data exported successfully!');
+                                // Trigger download
+                                const link = document.createElement('a');
+                                link.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(data.csv);
+                                link.download = 'system_data_export.csv';
+                                link.click();
+                            } else {
+                                alert('Error: ' + data.error);
+                            }
+                        });
                 }
+            }
+        </script>
+        '''
+        
+        return html_wrapper('Admin Panel', content, get_navbar(), scripts)
+        
+    except Exception as e:
+        print(f"Admin panel error: {e}")
+        traceback.print_exc()
+        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+
+@app.route('/admin/test')
+@admin_required
+def admin_test():
+    """Admin system test page"""
+    try:
+        test_results = []
+        
+        # Test 1: Database Connection
+        try:
+            connection = get_db()
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT 1 as test')
+                result = cursor.fetchone()
+            connection.close()
+            test_results.append({
+                'name': 'Database Connection',
+                'status': 'success' if result and result['test'] == 1 else 'failed',
+                'message': 'Database connection successful' if result and result['test'] == 1 else 'Database connection failed'
+            })
+        except Exception as e:
+            test_results.append({
+                'name': 'Database Connection',
+                'status': 'failed',
+                'message': f'Error: {str(e)}'
+            })
+        
+        # Test 2: Email Configuration
+        try:
+            if ENABLE_EMAIL_NOTIFICATIONS:
+                test_results.append({
+                    'name': 'Email Configuration',
+                    'status': 'success',
+                    'message': f'Email notifications enabled using {EMAIL_HOST}:{EMAIL_PORT}'
+                })
+            else:
+                test_results.append({
+                    'name': 'Email Configuration',
+                    'status': 'warning',
+                    'message': 'Email notifications are disabled'
+                })
+        except Exception as e:
+            test_results.append({
+                'name': 'Email Configuration',
+                'status': 'failed',
+                'message': f'Error: {str(e)}'
+            })
+        
+        # Test 3: Table Counts
+        try:
+            connection = get_db()
+            with connection.cursor() as cursor:
+                tables = ['users', 'forms', 'responses', 'assignments', 'form_requests', 'notifications', 'student_form_reviews']
+                for table in tables:
+                    cursor.execute(f'SELECT COUNT(*) as count FROM {table}')
+                    result = cursor.fetchone()
+                    test_results.append({
+                        'name': f'{table.capitalize()} Table',
+                        'status': 'success',
+                        'message': f'{result["count"]} records found'
+                    })
+            connection.close()
+        except Exception as e:
+            test_results.append({
+                'name': 'Table Counts',
+                'status': 'failed',
+                'message': f'Error: {str(e)}'
+            })
+        
+        # Test 4: File Permissions
+        try:
+            import os
+            files_to_check = [__file__]
+            for file in files_to_check:
+                if os.path.exists(file):
+                    test_results.append({
+                        'name': f'File Access: {os.path.basename(file)}',
+                        'status': 'success',
+                        'message': 'File accessible'
+                    })
+                else:
+                    test_results.append({
+                        'name': f'File Access: {os.path.basename(file)}',
+                        'status': 'failed',
+                        'message': 'File not found'
+                    })
+        except Exception as e:
+            test_results.append({
+                'name': 'File Permissions',
+                'status': 'failed',
+                'message': f'Error: {str(e)}'
+            })
+        
+        # Test 5: Session Management
+        try:
+            if 'user_id' in session:
+                test_results.append({
+                    'name': 'Session Management',
+                    'status': 'success',
+                    'message': f'Session active for user: {session.get("name")}'
+                })
+            else:
+                test_results.append({
+                    'name': 'Session Management',
+                    'status': 'failed',
+                    'message': 'No active session'
+                })
+        except Exception as e:
+            test_results.append({
+                'name': 'Session Management',
+                'status': 'failed',
+                'message': f'Error: {str(e)}'
+            })
+        
+        # Test 6: Configuration Values
+        try:
+            config_tests = [
+                ('MYSQL_HOST', MYSQL_HOST),
+                ('MYSQL_DB', MYSQL_DB),
+                ('EMAIL_HOST', EMAIL_HOST),
+                ('ENABLE_EMAIL_NOTIFICATIONS', ENABLE_EMAIL_NOTIFICATIONS)
+            ]
+            
+            for config_name, config_value in config_tests:
+                test_results.append({
+                    'name': f'Config: {config_name}',
+                    'status': 'success' if config_value else 'warning',
+                    'message': f'Value: {config_value}'
+                })
+        except Exception as e:
+            test_results.append({
+                'name': 'Configuration',
+                'status': 'failed',
+                'message': f'Error: {str(e)}'
+            })
+        
+        # Import necessary modules for system info
+        import sys
+        import flask
+        
+        # Generate test results HTML
+        results_html = ''
+        for test in test_results:
+            badge_color = {
+                'success': 'success',
+                'failed': 'danger',
+                'warning': 'warning'
+            }.get(test['status'], 'secondary')
+            
+            icon = {
+                'success': 'fa-check-circle',
+                'failed': 'fa-times-circle',
+                'warning': 'fa-exclamation-triangle'
+            }.get(test['status'], 'fa-question-circle')
+            
+            results_html += f'''
+            <div class="card mb-2">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="mb-1">
+                                <i class="fas {icon} me-2 text-{badge_color}"></i>
+                                {test['name']}
+                            </h6>
+                            <p class="mb-0 text-muted">{test['message']}</p>
+                        </div>
+                        <span class="badge bg-{badge_color}">{test['status'].upper()}</span>
+                    </div>
+                </div>
+            </div>
+            '''
+        
+        # Calculate statistics
+        total_tests = len(test_results)
+        passed_tests = len([t for t in test_results if t['status'] == 'success'])
+        failed_tests = len([t for t in test_results if t['status'] == 'failed'])
+        warning_tests = len([t for t in test_results if t['status'] == 'warning'])
+        
+        content = f'''
+        <div class="mb-4">
+            <h2 class="text-white">System Test</h2>
+            <p class="text-white-50">Diagnostic tests for system components</p>
+        </div>
+        
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="stat-card" style="background: linear-gradient(45deg, #10b981, #059669);">
+                    <h5>Tests Passed</h5>
+                    <h2>{passed_tests}/{total_tests}</h2>
+                    <small>{round((passed_tests/total_tests)*100, 1)}% success rate</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card" style="background: linear-gradient(45deg, #ef4444, #dc2626);">
+                    <h5>Tests Failed</h5>
+                    <h2>{failed_tests}</h2>
+                    <small>{round((failed_tests/total_tests)*100, 1)}% failure rate</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card" style="background: linear-gradient(45deg, #f59e0b, #d97706);">
+                    <h5>Warnings</h5>
+                    <h2>{warning_tests}</h2>
+                    <small>Requires attention</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card" style="background: linear-gradient(45deg, #3b82f6, #1d4ed8);">
+                    <h5>System Status</h5>
+                    <h2>{'HEALTHY' if failed_tests == 0 else 'ISSUES'}</h2>
+                    <small>{'All systems operational' if failed_tests == 0 else 'Some tests failed'}</small>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Test Results ({total_tests} tests)</h5>
+                    <div>
+                        <button onclick="runTests()" class="btn btn-primary">
+                            <i class="fas fa-sync-alt me-2"></i>Run Tests Again
+                        </button>
+                        <button onclick="exportTestResults()" class="btn btn-success">
+                            <i class="fas fa-download me-2"></i>Export Results
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                {results_html}
+            </div>
+        </div>
+        
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0">System Information</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <table class="table table-sm">
+                            <tbody>
+                                <tr>
+                                    <th>Python Version</th>
+                                    <td>{sys.version.split()[0]}</td>
+                                </tr>
+                                <tr>
+                                    <th>Flask Version</th>
+                                    <td>{flask.__version__}</td>
+                                </tr>
+                                <tr>
+                                    <th>PyMySQL Version</th>
+                                    <td>{pymysql.__version__}</td>
+                                </tr>
+                                <tr>
+                                    <th>App Version</th>
+                                    <td>1.0.0</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <table class="table table-sm">
+                            <tbody>
+                                <tr>
+                                    <th>Database Host</th>
+                                    <td>{MYSQL_HOST}</td>
+                                </tr>
+                                <tr>
+                                    <th>Database Name</th>
+                                    <td>{MYSQL_DB}</td>
+                                </tr>
+                                <tr>
+                                    <th>Email Host</th>
+                                    <td>{EMAIL_HOST}</td>
+                                </tr>
+                                <tr>
+                                    <th>Email Notifications</th>
+                                    <td>{'Enabled' if ENABLE_EMAIL_NOTIFICATIONS else 'Disabled'}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        '''
+        
+        scripts = '''
+        <script>
+            function runTests() {
+                if (confirm('Run system tests again?')) {
+                    window.location.reload();
+                }
+            }
+            
+            function exportTestResults() {
+                // Create CSV content
+                let csvContent = "Test Name,Status,Message\\n";
+                
+                // Get all test results from the page
+                document.querySelectorAll('.card.mb-2').forEach(card => {
+                    const name = card.querySelector('h6').textContent.trim();
+                    const status = card.querySelector('.badge').textContent.trim();
+                    const message = card.querySelector('.text-muted').textContent.trim();
+                    
+                    csvContent += `"${name}","${status}","${message}"\\n`;
+                });
+                
+                // Create download link
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", "system_test_results.csv");
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
             }
         </script>
         '''
@@ -6306,133 +6964,166 @@ def admin_test():
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
 
-@app.route('/api/test-email', methods=['POST'])
+@app.route('/admin/export-data')
 @admin_required
-def test_email():
-    """Send a test email to verify email configuration"""
+def export_system_data():
+    """Export system data as CSV"""
     try:
-        html_content = f'''
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #667eea;">Test Email from FormMaster Pro</h2>
-            <p>Hello {session['name']},</p>
-            <p>This is a test email to verify that the email notification system is working correctly.</p>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                <p><strong>Test Details:</strong></p>
-                <p>Recipient: {session['email']}</p>
-                <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                <p>System: FormMaster Pro</p>
-            </div>
-            <p>If you received this email, the email notification system is configured correctly.</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">This is an automated test message from FormMaster Pro.</p>
-        </div>
-        '''
+        connection = get_db()
         
-        success = send_email(session['email'], 'Test Email - FormMaster Pro', html_content)
+        # Collect data from all tables
+        data_sections = []
         
-        if success:
-            return jsonify({'success': True, 'message': 'Test email sent successfully'})
-        else:
-            return jsonify({'success': False, 'error': 'Failed to send test email'})
-    except Exception as e:
-        print(f"Test email error: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/test-notification', methods=['POST'])
-@admin_required
-def test_notification():
-    """Send a test notification"""
-    try:
-        success = create_notification(
-            user_id=session['user_id'],
-            title='Test Notification',
-            message='This is a test notification to verify the notification system is working correctly.',
-            type='info',
-            link='/notifications'
-        )
+        # Users data
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT id, name, email, role, department, created_at
+                FROM users
+                ORDER BY created_at DESC
+            ''')
+            users = cursor.fetchall()
+            
+            users_csv = "Users Export\n"
+            users_csv += "ID,Name,Email,Role,Department,Created At\n"
+            for user in users:
+                users_csv += f'{user["id"]},{user["name"]},{user["email"]},{user["role"]},{user["department"]},{user["created_at"]}\n'
+            
+            data_sections.append(users_csv)
         
-        if success:
-            return jsonify({'success': True, 'message': 'Test notification sent successfully'})
-        else:
-            return jsonify({'success': False, 'error': 'Failed to send test notification'})
+        # Forms data
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT f.id, f.title, f.description, u.name as creator, f.department, 
+                       f.form_type, f.is_published, f.review_status, f.created_at
+                FROM forms f
+                JOIN users u ON f.created_by = u.id
+                ORDER BY f.created_at DESC
+            ''')
+            forms = cursor.fetchall()
+            
+            forms_csv = "\n\nForms Export\n"
+            forms_csv += "ID,Title,Description,Creator,Department,Type,Published,Review Status,Created At\n"
+            for form in forms:
+                forms_csv += f'{form["id"]},"{form["title"]}","{form["description"]}",{form["creator"]},{form["department"]},{form["form_type"]},{form["is_published"]},{form["review_status"]},{form["created_at"]}\n'
+            
+            data_sections.append(forms_csv)
+        
+        # Responses data
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT r.id, f.title as form_title, u.name as student_name, 
+                       r.score, r.total_marks, r.percentage, r.submitted_at
+                FROM responses r
+                JOIN forms f ON r.form_id = f.id
+                JOIN users u ON r.student_id = u.id
+                ORDER BY r.submitted_at DESC
+            ''')
+            responses = cursor.fetchall()
+            
+            responses_csv = "\n\nResponses Export\n"
+            responses_csv += "ID,Form,Student,Score,Total Marks,Percentage,Submitted At\n"
+            for response in responses:
+                responses_csv += f'{response["id"]},{response["form_title"]},{response["student_name"]},{response["score"]},{response["total_marks"]},{response["percentage"]},{response["submitted_at"]}\n'
+            
+            data_sections.append(responses_csv)
+        
+        connection.close()
+        
+        # Combine all CSV data
+        full_csv = "\n".join(data_sections)
+        
+        return jsonify({
+            'success': True,
+            'csv': full_csv,
+            'filename': f'system_export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        })
+        
     except Exception as e:
-        print(f"Test notification error: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/repair-database', methods=['POST'])
-@admin_required
-def repair_database():
-    """Reinitialize database tables"""
-    try:
-        init_db()
-        return jsonify({'success': True, 'message': 'Database repaired successfully'})
-    except Exception as e:
-        print(f"Repair database error: {e}")
+        print(f"Export data error: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/logout')
 def logout():
+    """Logout user"""
+    # Create logout notification
+    if 'user_id' in session:
+        create_notification(
+            user_id=session['user_id'],
+            title='Logged Out',
+            message='You have been logged out of the system.',
+            type='info'
+        )
+    
+    # Send logout email notification
+    if ENABLE_EMAIL_NOTIFICATIONS and 'email' in session:
+        html_content = f'''
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #667eea;">Logout Alert</h2>
+            <p>Hello {session.get('name', 'User')},</p>
+            <p>You have been logged out of FormMaster Pro.</p>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                <p><strong>Logout Details:</strong></p>
+                <p>User: {session.get('name', 'N/A')}</p>
+                <p>Email: {session.get('email', 'N/A')}</p>
+                <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <p>IP Address: {request.remote_addr}</p>
+            </div>
+            <p>If this wasn't you, please contact the system administrator immediately.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
+        </div>
+        '''
+        send_email(session['email'], 'Logout Alert - FormMaster Pro', html_content)
+    
+    # Clear session
     session.clear()
     return redirect('/login')
 
-# Error handlers
+# Add error handlers
 @app.errorhandler(404)
-def not_found(e):
-    return html_wrapper('404', '<div class="alert alert-warning">Page not found</div>', get_navbar(), ''), 404
+def page_not_found(e):
+    return html_wrapper('404 Not Found', '''
+    <div class="row justify-content-center align-items-center" style="min-height: 80vh;">
+        <div class="col-md-6 text-center">
+            <h1 class="display-1 text-white">404</h1>
+            <h2 class="text-white">Page Not Found</h2>
+            <p class="text-white-50">The page you are looking for doesn't exist or has been moved.</p>
+            <a href="/dashboard" class="btn btn-primary btn-lg">
+                <i class="fas fa-home me-2"></i>Go to Dashboard
+            </a>
+        </div>
+    </div>
+    ''', get_navbar() if 'user_id' in session else '', ''), 404
 
 @app.errorhandler(500)
-def server_error(e):
-    return html_wrapper('500', '<div class="alert alert-danger">Server error</div>', get_navbar(), ''), 500
+def internal_server_error(e):
+    return html_wrapper('500 Internal Server Error', f'''
+    <div class="row justify-content-center align-items-center" style="min-height: 80vh;">
+        <div class="col-md-6 text-center">
+            <h1 class="display-1 text-white">500</h1>
+            <h2 class="text-white">Internal Server Error</h2>
+            <p class="text-white-50">Something went wrong on our end. Please try again later.</p>
+            <div class="alert alert-danger">
+                <strong>Error Details:</strong><br>
+                {str(e)}
+            </div>
+            <a href="/dashboard" class="btn btn-primary btn-lg">
+                <i class="fas fa-home me-2"></i>Go to Dashboard
+            </a>
+        </div>
+    </div>
+    ''', get_navbar() if 'user_id' in session else '', ''), 500
 
+# Main application entry point
 if __name__ == '__main__':
-    # Initialize database
-    print("=" * 60)
-    print("FORM SYSTEM WITH DEPARTMENT SEGREGATION & TEACHER ANALYTICS")
-    print("=" * 60)
+    print("Initializing database...")
     init_db()
     
-    print("\n✓ Database initialized successfully")
-    print(f"✓ MySQL Database: {MYSQL_DB}")
-    print(f"✓ Admin Credentials: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
+    print("Starting FormMaster Pro...")
+    print(f"Admin URL: http://localhost:5000/login")
+    print(f"Admin Email: {ADMIN_EMAIL}")
+    print(f"Admin Password: {ADMIN_PASSWORD}")
+    print(f"Super Admin Email: {SUPER_ADMIN_EMAIL}")
+    print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
-    if ENABLE_EMAIL_NOTIFICATIONS:
-        print(f"✓ Email Notifications: ENABLED")
-        print(f"  Email: {EMAIL_USER}")
-    else:
-        print(f"✗ Email Notifications: DISABLED (set ENABLE_EMAIL_NOTIFICATIONS = True to enable)")
-    
-    print("\n✓ Key Features Implemented:")
-    print("  1. Department-based form segregation")
-    print("  2. Dropdown department filters for admin/teacher")
-    print("  3. Teacher-only access to their department forms")
-    print("  4. Teacher analytics dashboard")
-    print("  5. Student access limited to their department")
-    print("  6. Department-wise statistics in all views")
-    print("  7. Email notifications for all major transactions")
-    print("  8. Real-time notifications system with bell icon")
-    print("  9. Notification center with mark as read/delete")
-    print(" 10. Automated notifications for all user actions")
-    
-    print("\n✓ Notification Triggers:")
-    print("  - Login/Logout")
-    print("  - Form creation/editing")
-    print("  - Form submission/review")
-    print("  - Request approval/rejection")
-    print("  - Form assignment")
-    print("  - Student form submission")
-    print("  - Form approval/rejection by teachers")
-    
-    print("\n✓ Access Levels:")
-    print("  - Admin: Full system access, all departments")
-    print("  - Teacher: Limited to their department, full functionality")
-    print("  - Student: Limited to their department, can request/respond to forms")
-    
-    print("\nStarting server...")
-    print("Access at: http://localhost:5000")
-    print("Admin Test: http://localhost:5000/admin/test")
-    print("Teacher Analytics: http://localhost:5000/teacher-analytics")
-    print("Notifications: http://localhost:5000/notifications")
-    print("=" * 60)
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
-
+    app.run(host='0.0.0.0', port=5000, debug=True)

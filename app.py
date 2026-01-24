@@ -6566,13 +6566,15 @@ if __name__ == '__main__':
 
 
     # Get port from Railway environment variable
-    port = int(os.environ.get('PORT', 5000))
-    
+    port = int(os.environ.get('PORT', 8080))  # Changed from 5000 to 8080
+        
     print(f"\n✓ Server starting on port {port}")
     print("✓ Access your app at the Railway URL")
-    
+    print(f"✓ App URL: https://{os.environ.get('RAILWAY_STATIC_URL', 'your-app-name')}.railway.app")
+        
     # Run the app
-    app.run(host='0.0.0.0', port=port)   
+    app.run(host='0.0.0.0', port=port, debug=False)   
+
 
 
 

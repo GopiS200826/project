@@ -5407,7 +5407,7 @@ def share_form(form_id):
         connection.close()
         
         # Create public link
-        public_link = f"http://localhost:5000/public/form/{form.get('share_token', '')}"
+        public_link = f"https://project-production-2a6f.up.railway.app/form/{form.get('share_token', '')}"
         
         content = f'''
         <div class="row justify-content-center">
@@ -7127,4 +7127,5 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 

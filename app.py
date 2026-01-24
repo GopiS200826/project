@@ -14,6 +14,7 @@ import time
 from decimal import Decimal
 import mysql.connector  # Changed from pymysql to be consistent
 from mysql.connector import Error
+from dotenv import load_dotenv
 
 
 app = Flask(__name__)
@@ -21,36 +22,53 @@ app.secret_key = 'your-secret-key-change-in-production'
 
 
 # Database Configuration for Railway
-def get_db_connection():
-    """Get database connection for Railway"""
-    try:
-        # Get connection details from Railway environment variables
-        db_host = os.environ.get('MYSQLHOST', 'mysql.railway.internal')
-        db_port = int(os.environ.get('MYSQLPORT', '3306'))
-        db_user = os.environ.get('MYSQLUSER', 'root')
-        db_password = os.environ.get('MYSQLPASSWORD', 'tPLXNLpSkMKDwkOmdASGmtXdsJVMyrVf')
-        db_name = os.environ.get('MYSQLDATABASE', 'railway')
-        
-        connection = pymysql.connect(
-            host=db_host,
-            user=db_user,
-            password=db_password,
-            database=db_name,
-            port=db_port,
-            charset='utf8mb4',
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-            connect_timeout=10
-        )
-        print(f"Connected to database: {db_name} on {db_host}:{db_port}")
-        return connection
-    except Exception as e:
-        print(f"Error connecting to MySQL: {e}")
-        print(f"Full error: {traceback.format_exc()}")
-        return None
 
-# Alias for compatibility
-get_db = get_db_connection
+
+# Load environment variables
+load_dotenv()
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
+
+# Database Configuration
+MYSQL_HOST = os.environ.get('MYSQLHOST', 'mysql.railway.internal')
+MYSQL_USER = os.environ.get('MYSQLUSER', 'root')
+MYSQL_PASSWORD = os.environ.get('MYSQLPASSWORD', 'tPLXNLpSkMKDwkOmdASGmtXdsJVMyrVf')
+MYSQL_DB = os.environ.get('MYSQLDATABASE', 'railway')
+MYSQL_PORT = int(os.environ.get('MYSQLPORT', 3306))
+
+# Email Configuration
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
+EMAIL_USER = os.environ.get('EMAIL_USER', '')
+EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD', '')
+EMAIL_FROM = os.environ.get('EMAIL_FROM', '')
+
+# Enable/Disable email notifications
+ENABLE_EMAIL_NOTIFICATIONS = os.environ.get('ENABLE_EMAIL_NOTIFICATIONS', 'False').lower() == 'true'
+
+# Default Admin Credentials (change in production)
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@example.com')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
+ADMIN_NAME = os.environ.get('ADMIN_NAME', 'System Administrator')
+
+# Department options
+DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
+
+# Database connection
+def get_db():
+    connection = pymysql.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DB,
+        port=MYSQL_PORT,
+        charset='utf8mb4',
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True,
+        connect_timeout=10
+    )
+    return connection
 
 # Remove the old get_db() function completely (lines 76-85)
 
@@ -6403,46 +6421,28 @@ def not_found(e):
 def server_error(e):
     return html_wrapper('500', '<div class="alert alert-danger">Server error</div>', get_navbar(), ''), 500
 
+
 if __name__ == '__main__':
     # Initialize database
     print("=" * 60)
-    print("FORM SYSTEM - Railway Deployment")
+    print("FORM SYSTEM WITH DEPARTMENT SEGREGATION & TEACHER ANALYTICS")
     print("=" * 60)
+    init_db()
     
-    # Get Railway environment
-    railway_env = os.environ.get('RAILWAY_ENVIRONMENT', 'production')
-    print(f"Environment: {railway_env}")
-    
-    # Test database connection
-    conn = get_db_connection()
-    if conn:
-        print("✓ Database connection: SUCCESS")
-        
-        # Initialize tables
-        init_db()
-        conn.close()
-    else:
-        print("✗ Database connection: FAILED")
-        print("Please check your Railway MySQL service is running")
-    
-    # Email configuration status
-    if ENABLE_EMAIL_NOTIFICATIONS:
-        if EMAIL_USER and EMAIL_PASSWORD:
-            print(f"✓ Email Notifications: ENABLED")
-            print(f"  Using: {EMAIL_USER}")
-        else:
-            print(f"⚠ Email Notifications: CONFIGURED but credentials missing")
-            print(f"  Set EMAIL_USER and EMAIL_PASSWORD in Railway variables")
-    else:
-        print(f"✗ Email Notifications: DISABLED")
-    
-    
+    print("\n✓ Database initialized successfully")
+    print(f"✓ MySQL Database: {MYSQL_DB}")
+    print(f"✓ Admin Credentials: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
     
     if ENABLE_EMAIL_NOTIFICATIONS:
         print(f"✓ Email Notifications: ENABLED")
         print(f"  Email: {EMAIL_USER}")
     else:
         print(f"✗ Email Notifications: DISABLED (set ENABLE_EMAIL_NOTIFICATIONS = True to enable)")
+    
+ 
+    
+    
+    
     
     print("\n✓ Key Features Implemented:")
     print("  1. Department-based form segregation")
@@ -6478,12 +6478,12 @@ if __name__ == '__main__':
     print("=" * 60)
 
 
-    print("\nApplication ready!")
-    print("=" * 60)
-    
-    # Get port from Railway environment
+    # Get port from Railway environment variable or use default
     port = int(os.environ.get('PORT', 5000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    
+    # For production, use Railway's host
+    app.run(host='0.0.0.0', port=port)    
+
 
 
 

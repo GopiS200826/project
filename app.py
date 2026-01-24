@@ -1277,8 +1277,8 @@ def dashboard():
                     cursor.execute('''
                         SELECT COUNT(*) as count FROM forms 
                         WHERE is_student_submission = TRUE 
-                        AND review_status = 'pending'
-                        AND department = %s
+                            AND review_status = 'pending'
+                            AND department = %s
                     ''', (user_dept,))
                 pending_reviews_count = cursor.fetchone()['count']
             
@@ -1289,7 +1289,8 @@ def dashboard():
                     SELECT department, 
                            COUNT(*) as form_count,
                            SUM(CASE WHEN is_student_submission = TRUE THEN 1 ELSE 0 END) as student_forms,
-                           SUM(CASE WHEN review_status = 'approved' THEN 1 ELSE 0 END) as approved_forms
+                           SUM(CASE WHEN review_status = 'approved' THEN 1 ELSE 0 END) as approved_forms,
+                           SUM(CASE WHEN is_published = TRUE THEN 1 ELSE 0 END) as published_forms
                     FROM forms 
                     GROUP BY department
                 ''')
@@ -1366,7 +1367,8 @@ def dashboard():
                             <h4>{stat['form_count']}</h4>
                             <small class="text-muted">
                                 Student Forms: {stat['student_forms']}<br>
-                                Approved: {stat['approved_forms']}
+                                Approved: {stat['approved_forms']}<br>
+                                Published: {stat['published_forms']}
                             </small>
                             <div class="mt-2">
                                 <a href="/dashboard?department={stat['department']}" class="btn btn-sm btn-outline-primary">
@@ -1411,6 +1413,7 @@ def dashboard():
             assign_button = ''
             share_button = ''
             delete_button = ''
+            publish_button = ''
             student_actions = ''
             
             if form['created_by'] == user_id or user_role in ['teacher', 'admin', 'super_admin']:
@@ -1428,6 +1431,26 @@ def dashboard():
                     <i class="fas fa-trash"></i> Delete
                 </button>
                 '''
+            
+            # Publish/Unpublish button for admin/super_admin
+            if user_role in ['admin', 'super_admin']:
+                publish_text = 'Unpublish' if form['is_published'] else 'Publish'
+                publish_icon = 'fa-eye-slash' if form['is_published'] else 'fa-eye'
+                publish_class = 'outline-warning' if form['is_published'] else 'outline-success'
+                # Disable publish button for unapproved student forms
+                if form.get('is_student_submission') and form.get('review_status') != 'approved':
+                    publish_button = f'''
+                    <button class="btn btn-sm btn-outline-secondary" disabled title="Student forms must be approved before publishing">
+                        <i class="fas {publish_icon}"></i> {publish_text}
+                    </button>
+                    '''
+                else:
+                    publish_button = f'''
+                    <button onclick="togglePublish({form['id']}, {form['is_published']}, '{form['title']}')" 
+                            class="btn btn-sm btn-{publish_class}">
+                        <i class="fas {publish_icon}"></i> {publish_text}
+                    </button>
+                    '''
             
             # Student actions for taking forms
             if user_role == 'student':
@@ -1471,6 +1494,7 @@ def dashboard():
                         {assign_button}
                         {share_button}
                         {delete_button}
+                        {publish_button}
                     </div>
                 </div>
             </div>
@@ -1642,6 +1666,29 @@ def dashboard():
                     .then(data => {
                         if (data.success) {
                             alert('Form deleted successfully!');
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + data.error);
+                        }
+                    });
+                }
+            }
+            
+            function togglePublish(formId, currentStatus, formTitle) {
+                const action = currentStatus ? 'unpublish' : 'publish';
+                const confirmMsg = currentStatus 
+                    ? `Unpublish the form "${formTitle}"?\\n\\nThis will make the form unavailable to students.`
+                    : `Publish the form "${formTitle}"?\\n\\nThis will make the form available to students.`;
+                
+                if (confirm(confirmMsg)) {
+                    fetch('/form/' + formId + '/toggle-publish', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert(`Form ${data.status_text} successfully!`);
                             window.location.reload();
                         } else {
                             alert('Error: ' + data.error);
@@ -2034,6 +2081,19 @@ def edit_student_form(form_id):
             </div>
             '''
         
+        # Create the publish button HTML conditionally
+        publish_button_html = ''
+        if session['role'] in ['admin', 'super_admin'] and form.get('review_status') == 'approved':
+            btn_class = 'btn-warning' if form['is_published'] else 'btn-info'
+            icon_class = 'fa-eye-slash' if form['is_published'] else 'fa-eye'
+            btn_text = 'Unpublish' if form['is_published'] else 'Publish'
+            publish_button_html = f'''
+                        <button onclick="togglePublish()" class="btn {btn_class}">
+                            <i class="fas {icon_class} me-2"></i>
+                            {btn_text}
+                        </button>
+                        '''
+        
         content = f'''
         <div class="row">
             <div class="col-md-3">
@@ -2083,6 +2143,7 @@ def edit_student_form(form_id):
                         <button onclick="submitForReview()" class="btn btn-primary">
                             <i class="fas fa-paper-plane me-2"></i>Submit for Review
                         </button>
+                        {publish_button_html}
                         <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
                     </div>
                 </div>
@@ -2294,34 +2355,6 @@ def edit_student_form(form_id):
         print(f"Edit student form error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
-
-@app.route('/api/student-form/<int:form_id>', methods=['POST'])
-@student_required
-def update_student_form(form_id):
-    try:
-        data = request.json
-        questions = data.get('questions', [])
-        
-        connection = get_db()
-        with connection.cursor() as cursor:
-            cursor.execute('UPDATE forms SET questions = %s WHERE id = %s', 
-                          (json.dumps(questions), form_id))
-            connection.commit()
-        connection.close()
-        
-        # Create notification for saving form
-        create_notification(
-            user_id=session['user_id'],
-            title='Form Saved',
-            message='Your form questions have been saved successfully.',
-            type='success',
-            link=f'/student-form/{form_id}/edit'
-        )
-        
-        return jsonify({'success': True})
-    except Exception as e:
-        print(f"Update student form error: {e}")
-        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/submit-for-review/<int:form_id>', methods=['POST'])
 @student_required
@@ -2639,7 +2672,7 @@ def my_responses():
             </div>
         </div>
         
-        {"""
+                ''' + ("""
         <div class="text-center py-5">
             <i class="fas fa-chart-line fa-3x text-muted mb-3"></i>
             <h4>No responses yet</h4>
@@ -2648,7 +2681,7 @@ def my_responses():
                 <i class="fas fa-list me-2"></i>Browse Available Forms
             </a>
         </div>
-        """ if not responses else ''}
+        """ if not responses else '') + '''
         '''
         
         return html_wrapper('My Results', content, get_navbar(), '')
@@ -3250,6 +3283,19 @@ def edit_form(form_id):
         except:
             questions = []
         
+        # Calculate the button HTML before the f-string
+        publish_button_html = ''
+        if session['role'] in ['admin', 'super_admin']:
+            btn_class = 'btn-warning' if form['is_published'] else 'btn-primary'
+            icon_class = 'fa-eye-slash' if form['is_published'] else 'fa-eye'
+            btn_text = 'Unpublish' if form['is_published'] else 'Publish'
+            publish_button_html = f'''
+            <button onclick="togglePublish()" class="btn {btn_class}">
+                <i class="fas {icon_class} me-2"></i>
+                {btn_text}
+            </button>
+            '''
+        
         content = f'''
         <div class="row">
             <div class="col-md-3">
@@ -3296,6 +3342,7 @@ def edit_form(form_id):
                         <button onclick="saveForm()" class="btn btn-success">
                             <i class="fas fa-save me-2"></i>Save Form
                         </button>
+                        {publish_button_html}
                         <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
                     </div>
                 </div>
@@ -3480,7 +3527,7 @@ def edit_form(form_id):
         print(f"Edit form error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
-
+    
 @app.route('/api/form/<int:form_id>', methods=['POST'])
 @login_required
 def update_form(form_id):
@@ -4618,7 +4665,7 @@ def teacher_analytics():
                 ORDER BY f.created_at DESC
             ''', (user_id, user_dept))
             teacher_forms = cursor.fetchall()
-            
+
             # Get pending requests count
             cursor.execute('''
                 SELECT COUNT(*) as pending_requests
@@ -4708,11 +4755,27 @@ def teacher_analytics():
         for form in teacher_forms:
             type_badge = 'info' if form['form_type'] == 'open' else 'purple'
             status_badge = 'success' if form['is_published'] else 'warning'
+            
+            # Add publish button for admin/super_admin
+            publish_button = ''
+            if session['role'] in ['admin', 'super_admin']:
+                publish_text = 'Unpublish' if form['is_published'] else 'Publish'
+                publish_class = 'warning' if form['is_published'] else 'success'
+                publish_button = f'''
+                <button onclick="togglePublish({form['id']}, {form['is_published']}, '{form['title']}')" 
+                        class="btn btn-sm btn-outline-{publish_class}">
+                    <i class="fas {'fa-eye-slash' if form['is_published'] else 'fa-eye'}"></i>
+                </button>
+                '''
+            
             teacher_forms_html += f'''
             <tr onclick="showFormDetails({form['id']})" style="cursor: pointer;">
                 <td>{form['title']}</td>
                 <td><span class="badge bg-{type_badge}">{form['form_type'].title()}</span></td>
-                <td><span class="badge bg-{status_badge}">{'Published' if form['is_published'] else 'Draft'}</span></td>
+                <td>
+                    <span class="badge bg-{status_badge}">{'Published' if form['is_published'] else 'Draft'}</span>
+                    {publish_button}
+                </td>
                 <td>{form['total_responses']}</td>
                 <td>{form['total_assignments']}</td>
                 <td>{form['created_at'].strftime('%Y-%m-%d')}</td>
@@ -5325,7 +5388,7 @@ def teacher_analytics():
         print(f"Teacher analytics error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
-
+    
 @app.route('/form/<int:form_id>/delete', methods=['POST'])
 @super_admin_required
 def delete_form(form_id):
@@ -5898,6 +5961,97 @@ def share_form(form_id):
         print(f"Share form error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+    
+@app.route('/form/<int:form_id>/toggle-publish', methods=['POST'])
+@admin_required
+def toggle_form_publish(form_id):
+    """Toggle form publish status (Admin/Super Admin only)"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get form details
+            cursor.execute('SELECT * FROM forms WHERE id = %s', (form_id,))
+            form = cursor.fetchone()
+            
+            if not form:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Form not found'})
+            
+            # Check permissions - admins/super_admins can toggle any form, teachers only their own
+            if session['role'] == 'teacher':
+                if form['created_by'] != session['user_id'] and form['department'] != session['department']:
+                    connection.close()
+                    return jsonify({'success': False, 'error': 'Access denied'})
+            
+            # Toggle publish status
+            new_status = not form['is_published']
+            
+            # For student forms, ensure they're approved before publishing
+            if form.get('is_student_submission'):
+                if new_status and form.get('review_status') != 'approved':
+                    connection.close()
+                    return jsonify({'success': False, 'error': 'Student forms must be approved before publishing'})
+            
+            cursor.execute('UPDATE forms SET is_published = %s WHERE id = %s', (new_status, form_id))
+            connection.commit()
+        
+        connection.close()
+        
+        status_text = 'published' if new_status else 'unpublished'
+        
+        # Create notification
+        create_notification(
+            user_id=session['user_id'],
+            title=f'Form {status_text.title()}',
+            message=f'Form "{form["title"]}" has been {status_text}.',
+            type='success' if new_status else 'warning',
+            link=f'/form/{form_id}/edit'
+        )
+        
+        # Create notification for form creator if different
+        if form['created_by'] != session['user_id']:
+            create_notification(
+                user_id=form['created_by'],
+                title=f'Your Form Was {status_text.title()}',
+                message=f'Your form "{form["title"]}" was {status_text} by {session["name"]}.',
+                type='info',
+                link=f'/form/{form_id}/edit'
+            )
+        
+        # Send email notification
+        if ENABLE_EMAIL_NOTIFICATIONS:
+            # Get creator details
+            connection = get_db()
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT email, name FROM users WHERE id = %s', (form['created_by'],))
+                creator = cursor.fetchone()
+            connection.close()
+            
+            if creator:
+                html_content = f'''
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: {"#10b981" if new_status else "#f59e0b"};">Form {status_text.title()}</h2>
+                    <p>Hello {creator['name']},</p>
+                    <p>Your form has been {status_text} by an administrator.</p>
+                    <div style="background: {"#f0f9ff" if new_status else "#fefce8"}; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                        <p><strong>Form Details:</strong></p>
+                        <p>Title: {form['title']}</p>
+                        <p>Status: <strong>{status_text.upper()}</strong></p>
+                        <p>Changed By: {session['name']}</p>
+                        <p>Change Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    </div>
+                    <p>{"The form is now visible to students who have access." if new_status else "The form is no longer visible to students."}</p>
+                    <a href="http://localhost:5000/form/{form_id}/edit" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Form</a>
+                    <hr>
+                    <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
+                </div>
+                '''
+                send_email(creator['email'], f'Form {status_text.title()} - FormMaster Pro', html_content)
+        
+        return jsonify({'success': True, 'new_status': new_status, 'status_text': status_text})
+    except Exception as e:
+        print(f"Toggle form publish error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
     
 
 @app.route('/debug/share-tokens')
@@ -6681,11 +6835,13 @@ def get_student_details(student_id):
                                         </tr>
             '''
         
-        html_content += '''
+        view_all_responses_link = f'<p class="text-center"><a href="#" onclick="viewAllResponses({student_id})">View All Responses</a></p>' if len(responses) > 5 else ''
+        
+        html_content += f'''
                                     </tbody>
                                 </table>
                             </div>
-                            {f'<p class="text-center"><a href="#" onclick="viewAllResponses({student_id})">View All Responses</a></p>' if len(responses) > 5 else ''}
+                            {view_all_responses_link}
                         </div>
                     </div>
                 </div>
@@ -6723,11 +6879,13 @@ def get_student_details(student_id):
                                         </tr>
             '''
         
-        html_content += '''
+        view_all_assignments_link = f'<p class="text-center"><a href="#" onclick="viewAllAssignments({student_id})">View All Assignments</a></p>' if len(assignments) > 5 else ''
+        
+        html_content += f'''
                                     </tbody>
                                 </table>
                             </div>
-                            {f'<p class="text-center"><a href="#" onclick="viewAllAssignments({student_id})">View All Assignments</a></p>' if len(assignments) > 5 else ''}
+                            {view_all_assignments_link}
                         </div>
                     </div>
                 </div>
@@ -6768,11 +6926,13 @@ def get_student_details(student_id):
                                         </tr>
             '''
         
-        html_content += '''
+        view_all_requests_link = f'<p class="text-center"><a href="#" onclick="viewAllRequests({student_id})">View All Requests</a></p>' if len(requests) > 5 else ''
+        
+        html_content += f'''
                                     </tbody>
                                 </table>
                             </div>
-                            {f'<p class="text-center"><a href="#" onclick="viewAllRequests({student_id})">View All Requests</a></p>' if len(requests) > 5 else ''}
+                            {view_all_requests_link}
                         </div>
                     </div>
                 </div>
@@ -6780,20 +6940,20 @@ def get_student_details(student_id):
         </div>
         
         <script>
-            function viewAllResponses(studentId) {
+            function viewAllResponses(studentId) {{
                 // Implement view all responses functionality
                 alert('View all responses for student ' + studentId);
-            }
+            }}
             
-            function viewAllAssignments(studentId) {
+            function viewAllAssignments(studentId) {{
                 // Implement view all assignments functionality
                 alert('View all assignments for student ' + studentId);
-            }
+            }}
             
-            function viewAllRequests(studentId) {
+            function viewAllRequests(studentId) {{
                 // Implement view all requests functionality
                 alert('View all requests for student ' + studentId);
-            }
+            }}
         </script>
         '''
         
@@ -6806,6 +6966,7 @@ def get_student_details(student_id):
     except Exception as e:
         print(f"Error getting student details: {e}")
         return jsonify({'success': False, 'error': str(e)})
+    
 
 @app.route('/admin')
 @admin_required

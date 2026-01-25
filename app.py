@@ -47,21 +47,38 @@ SUPER_ADMIN_NAME = 'Super Administrator'
 # Department options
 DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
 
-# Add at the top with other imports
-from DBUtils.PooledDB import PooledDB
+# Remove the DBUtils import and replace with this:
 
-# Create connection pool
-db_pool = None
+import pymysql
+from threading import Lock
 
-def init_db_pool():
-    """Initialize database connection pool"""
-    global db_pool
-    if db_pool is None:
-        db_pool = PooledDB(
-            creator=pymysql,
-            mincached=2,
-            maxcached=5,
-            maxconnections=20,
+# Simple connection pool implementation
+class ConnectionPool:
+    def __init__(self, max_connections=10):
+        self.max_connections = max_connections
+        self.connections = []
+        self.lock = Lock()
+        
+    def get_connection(self):
+        """Get a database connection from the pool"""
+        with self.lock:
+            # Return existing connection if available
+            if self.connections:
+                return self.connections.pop()
+            # Create new connection
+            return self._create_connection()
+    
+    def return_connection(self, conn):
+        """Return connection to the pool"""
+        with self.lock:
+            if len(self.connections) < self.max_connections:
+                self.connections.append(conn)
+            else:
+                conn.close()
+    
+    def _create_connection(self):
+        """Create a new database connection"""
+        return pymysql.connect(
             host=MYSQL_HOST,
             user=MYSQL_USER,
             password=MYSQL_PASSWORD,
@@ -69,7 +86,21 @@ def init_db_pool():
             charset='utf8mb4',
             cursorclass=pymysql.cursors.DictCursor
         )
-    return db_pool
+
+# Initialize connection pool
+connection_pool = ConnectionPool(max_connections=5)
+
+# Update get_db function
+def get_db():
+    """Get database connection from pool"""
+    return connection_pool.get_connection()
+
+# Add cleanup function
+def close_db(conn):
+    """Return connection to pool"""
+    connection_pool.return_connection(conn)
+
+
 
 def get_db():
     """Get database connection from pool"""
@@ -7887,5 +7918,6 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 

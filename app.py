@@ -6037,8 +6037,7 @@ def share_form(form_id):
                                     <h5><i class="fas fa-link me-2"></i>Public Share Link</h5>
                                     <div class="input-group mb-3">
                                         <input type="text" class="form-control" id="shareLink" value="{public_link}" readonly>
-                                        <button class="btn btn-outline-primary copy-btn" onclick="copyToClipboard('shareLink')">
-                                            <i class="fas fa-copy"></i> Copy
+                                        <button class="btn btn-outline-primary copy-btn" onclick="copyToClipboard('shareLink', event)">                                            <i class="fas fa-copy"></i> Copy
                                         </button>
                                     </div>
                                     
@@ -6204,30 +6203,74 @@ def share_form(form_id):
         
         scripts = f'''
         <script>
-            function copyToClipboard(elementId) {{
+            function copyToClipboard(elementId, event) {{
+                if (event) event.preventDefault();
+                
                 const copyText = document.getElementById(elementId);
                 copyText.select();
                 copyText.setSelectionRange(0, 99999);
-                navigator.clipboard.writeText(copyText.value).then(() => {{
-                    // Show feedback
-                    const btn = event.target.closest('.copy-btn');
-                    const originalHTML = btn.innerHTML;
-                    btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-                    btn.classList.remove('btn-outline-primary');
-                    btn.classList.add('btn-success');
-                    
-                    setTimeout(() => {{
-                        btn.innerHTML = originalHTML;
-                        btn.classList.remove('btn-success');
-                        btn.classList.add('btn-outline-primary');
-                    }}, 2000);
-                    
-                    // Show toast notification
-                    showToast('Link copied to clipboard!', 'success');
-                }}).catch(err => {{
-                    console.error('Failed to copy: ', err);
-                    showToast('Failed to copy link', 'error');
-                }});
+                
+                try {{
+                    // Try using the modern Clipboard API first
+                    navigator.clipboard.writeText(copyText.value).then(() => {{
+                        // Show feedback
+                        const btn = event ? event.target.closest('.copy-btn') : document.querySelector('.copy-btn');
+                        if (btn) {{
+                            const originalHTML = btn.innerHTML;
+                            btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                            btn.classList.remove('btn-outline-primary');
+                            btn.classList.add('btn-success');
+                            
+                            setTimeout(() => {{
+                                btn.innerHTML = originalHTML;
+                                btn.classList.remove('btn-success');
+                                btn.classList.add('btn-outline-primary');
+                            }}, 2000);
+                        }}
+                        
+                        // Show toast notification
+                        showToast('Link copied to clipboard!', 'success');
+                    }}).catch(err => {{
+                        // Fallback to older method
+                        fallbackCopyTextToClipboard(copyText.value);
+                    }});
+                }} catch (err) {{
+                    // Fallback to older method
+                    fallbackCopyTextToClipboard(copyText.value);
+                }}
+            }}
+            
+            // Fallback method for older browsers
+            function fallbackCopyTextToClipboard(text) {{
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.top = '0';
+                textArea.style.left = '0';
+                textArea.style.width = '2em';
+                textArea.style.height = '2em';
+                textArea.style.padding = '0';
+                textArea.style.border = 'none';
+                textArea.style.outline = 'none';
+                textArea.style.boxShadow = 'none';
+                textArea.style.background = 'transparent';
+                
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                
+                try {{
+                    const successful = document.execCommand('copy');
+                    if (successful) {{
+                        showToast('Link copied to clipboard!', 'success');
+                    }} else {{
+                        showToast('Failed to copy link', 'error');
+                    }}
+                }} catch (err) {{
+                    showToast('Failed to copy link: ' + err, 'error');
+                }}
+                
+                document.body.removeChild(textArea);
             }}
             
             function togglePublicLink(formId) {{
@@ -6271,7 +6314,7 @@ def share_form(form_id):
             }}
             
             function regenerateToken(formId) {{
-                if (confirm('Regenerate share link?\\\\n\\\\n⚠️ Warning: This will:\\\\n• Invalidate the previous link\\\\n• Make old links show "Form Not Found"\\\\n• Generate a new QR code')) {{
+                if (confirm('Regenerate share link?\\n\\n⚠️ Warning: This will:\\n• Invalidate the previous link\\n• Make old links show "Form Not Found"\\n• Generate a new QR code')) {{
                     fetch('/api/form/' + formId + '/regenerate-token', {{
                         method: 'POST',
                         headers: {{'Content-Type': 'application/json'}}
@@ -6296,7 +6339,7 @@ def share_form(form_id):
                 }}
                 
                 if (!document.getElementById('enablePublicLink').checked) {{
-                    if (!confirm('Public link is currently disabled. The test will show "Form Not Found".\\\\n\\\\nEnable it first?')) {{
+                    if (!confirm('Public link is currently disabled. The test will show "Form Not Found".\\n\\nEnable it first?')) {{
                         return;
                     }}
                 }}
@@ -8295,6 +8338,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

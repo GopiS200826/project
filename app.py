@@ -47,18 +47,35 @@ SUPER_ADMIN_NAME = 'Super Administrator'
 # Department options
 DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
 
-# Database connection function - ADDED THIS MISSING FUNCTION
+# Add at the top with other imports
+from DBUtils.PooledDB import PooledDB
+
+# Create connection pool
+db_pool = None
+
+def init_db_pool():
+    """Initialize database connection pool"""
+    global db_pool
+    if db_pool is None:
+        db_pool = PooledDB(
+            creator=pymysql,
+            mincached=2,
+            maxcached=5,
+            maxconnections=20,
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DB,
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor
+        )
+    return db_pool
+
 def get_db():
-    """Get database connection"""
-    connection = pymysql.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
-        charset='utf8mb4',
-        cursorclass=pymysql.cursors.DictCursor
-    )
-    return connection
+    """Get database connection from pool"""
+    pool = init_db_pool()
+    return pool.connection()
+    
 # Add at the top with other imports
 import threading
 from queue import Queue
@@ -7870,4 +7887,5 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 

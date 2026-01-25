@@ -13,10 +13,20 @@ import os
 import time
 from decimal import Decimal
 import secrets
+import random
+import string
+import threading
+from queue import Queue
+import atexit
+import socket
 
-
+# Create Flask app ONCE
 app = Flask(__name__)
-app.secret_key = 'your-secret-key-change-in-production'
+app.secret_key = 'your-secret-key-change-in-production'  # Make sure this is set
+
+# OTP Configuration
+OTP_EXPIRY_MINUTES = 10
+OTP_LENGTH = 6
 
 # Database Configuration
 MYSQL_HOST = 'mysql-vdry.railway.internal'
@@ -28,8 +38,8 @@ MYSQL_DB = 'railway'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USER = 'gamergopi26@gmail.com'  # Change this to your email
-EMAIL_PASSWORD = 'Admin@123'  # Change this to your app password
-EMAIL_FROM = 'gamrgopi26@gmail.com'  # Change this to your email
+EMAIL_PASSWORD = 'laku neok xexr croj'  # Change this to your app password
+EMAIL_FROM = 'gamergopi26@gmail.com'  # Change this to your email
 
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
@@ -47,6 +57,8 @@ SUPER_ADMIN_NAME = 'Super Administrator'
 # Department options
 DEPARTMENTS = ['IT', 'Data Science', 'AI/ML', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS', 'Others']
 
+# Email queue for background processing
+email_queue = Queue()
 # Replace the existing get_db() function with this:
 
 import pymysql
@@ -55,15 +67,47 @@ from queue import Queue
 
 # Simple connection management
 def get_db():
-    """Get database connection - simplified version"""
-    return pymysql.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
-        charset='utf8mb4',
-        cursorclass=pymysql.cursors.DictCursor
-    )
+    """Get database connection with error handling"""
+    try:
+        connection = pymysql.connect(
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DB,
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False
+        )
+        return connection
+    except pymysql.Error as e:
+        print(f"Database connection error: {e}")
+        # Try to create database if it doesn't exist
+        try:
+            connection = pymysql.connect(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor
+            )
+            with connection.cursor() as cursor:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}")
+                cursor.execute(f"USE {MYSQL_DB}")
+            connection.close()
+            
+            # Try connecting again
+            return pymysql.connect(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                database=MYSQL_DB,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=False
+            )
+        except Exception as e2:
+            print(f"Failed to create database: {e2}")
+            raise
 
 # Email queue for background processing
 email_queue = Queue()
@@ -241,6 +285,22 @@ def init_db():
                             INDEX idx_created_at (created_at)
                         )''')
             
+            # In the init_db() function, replace the otps table creation with:
+            cursor.execute('''CREATE TABLE IF NOT EXISTS otps (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            email VARCHAR(100) NOT NULL,
+                            otp_code VARCHAR(10) NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            expires_at TIMESTAMP NULL,
+                            is_used BOOLEAN DEFAULT FALSE,
+                            purpose ENUM('login', 'registration', 'password_reset') DEFAULT 'login',
+                            INDEX idx_email (email),
+                            INDEX idx_otp_code (otp_code),
+                            INDEX idx_expires_at (expires_at),
+                            INDEX idx_is_used (is_used),
+                            INDEX idx_purpose (purpose)
+                            )''')
+            
             # Form requests table
             cursor.execute('''CREATE TABLE IF NOT EXISTS form_requests (
                             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -349,6 +409,206 @@ def hash_password(password):
 
 def check_password(hashed, password):
     return hashed == hashlib.sha256(password.encode()).hexdigest()
+
+# OTP Functions
+def generate_otp(length=OTP_LENGTH):
+    """Generate a random OTP"""
+    return ''.join(random.choices(string.digits, k=length))
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT 1 as status')
+            result = cursor.fetchone()
+        connection.close()
+        
+        return jsonify({
+            'status': 'healthy',
+            'database': 'connected' if result and result['status'] == 1 else 'disconnected',
+            'session': 'active' if 'user_id' in session else 'inactive',
+            'otp_enabled': True
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
+
+def store_otp(email, purpose='login'):
+    """Store OTP in database and return the OTP code"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Invalidate previous OTPs for this email and purpose
+            cursor.execute('''
+                UPDATE otps SET is_used = TRUE 
+                WHERE email = %s AND purpose = %s AND is_used = FALSE
+            ''', (email, purpose))
+            
+            # Generate new OTP
+            otp_code = generate_otp()
+            expires_at = datetime.now() + timedelta(minutes=OTP_EXPIRY_MINUTES)
+            
+            # Store new OTP
+            cursor.execute('''
+                INSERT INTO otps (email, otp_code, expires_at, purpose)
+                VALUES (%s, %s, %s, %s)
+            ''', (email, otp_code, expires_at, purpose))
+            
+            connection.commit()
+        
+        connection.close()
+        print(f"OTP stored for {email}: {otp_code} (expires: {expires_at})")
+        return otp_code
+    except Exception as e:
+        print(f"Error storing OTP: {e}")
+        traceback.print_exc()
+        return None
+
+def verify_otp(email, otp_code, purpose='login'):
+    """Verify OTP with better error handling"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT * FROM otps 
+                WHERE email = %s AND otp_code = %s AND purpose = %s 
+                AND is_used = FALSE AND expires_at > NOW()
+                ORDER BY created_at DESC LIMIT 1
+            ''', (email, otp_code, purpose))
+            otp_record = cursor.fetchone()
+            
+            print(f"DEBUG: OTP record found: {otp_record}")
+            
+            if otp_record:
+                # Mark OTP as used
+                cursor.execute('''
+                    UPDATE otps SET is_used = TRUE 
+                    WHERE id = %s
+                ''', (otp_record['id'],))
+                connection.commit()
+                return True
+        connection.close()
+        return False
+    except Exception as e:
+        print(f"Error verifying OTP: {e}")
+        return False
+    
+@app.route('/test-otp', methods=['GET', 'POST'])
+def test_otp():
+    """Test OTP endpoint"""
+    if request.method == 'GET':
+        return '''
+        <html>
+        <body>
+            <h1>Test OTP Submission</h1>
+            <form id="testForm">
+                <input type="email" name="email" placeholder="Email" value="test@example.com"><br>
+                <input type="text" name="otp" placeholder="OTP" value="123456"><br>
+                <input type="text" name="purpose" placeholder="Purpose" value="login"><br>
+                <button type="button" onclick="testSubmit()">Test JSON Submit</button>
+                <button type="button" onclick="testFormSubmit()">Test Form Submit</button>
+            </form>
+            <div id="result"></div>
+            
+            <script>
+                function testSubmit() {
+                    const form = document.getElementById('testForm');
+                    const data = {
+                        email: form.email.value,
+                        otp: form.otp.value,
+                        purpose: form.purpose.value
+                    };
+                    
+                    fetch('/verify-otp', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(data)
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        document.getElementById('result').innerHTML = 
+                            '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                    });
+                }
+                
+                function testFormSubmit() {
+                    const form = document.getElementById('testForm');
+                    const formData = new FormData(form);
+                    
+                    fetch('/verify-otp', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        document.getElementById('result').innerHTML = 
+                            '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                    });
+                }
+            </script>
+        </body>
+        </html>
+        '''
+
+def send_otp_email(email, otp_code, purpose='login'):
+    """Send OTP via email"""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        return True
+    
+    purpose_text = {
+        'login': 'Login',
+        'registration': 'Registration',
+        'password_reset': 'Password Reset'
+    }.get(purpose, 'Verification')
+    
+    subject = f'{purpose_text} OTP - FormMaster Pro'
+    
+    html_content = f'''
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px 10px 0 0;">
+            <h2 style="color: white; margin: 0; text-align: center;">
+                <i class="fas fa-shield-alt" style="margin-right: 10px;"></i>FormMaster Pro
+            </h2>
+        </div>
+        
+        <div style="padding: 30px; background: #ffffff; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <h3 style="color: #333; margin-top: 0;">{purpose_text} Verification</h3>
+            
+            <p>Hello,</p>
+            
+            <p>Use the following OTP to complete your {purpose_text.lower()}:</p>
+            
+            <div style="text-align: center; margin: 30px 0;">
+                <div style="background: #f8f9fa; border: 2px dashed #dee2e6; border-radius: 10px; padding: 20px; display: inline-block;">
+                    <div style="font-size: 32px; font-weight: bold; letter-spacing: 10px; color: #667eea;">
+                        {otp_code}
+                    </div>
+                </div>
+            </div>
+            
+            <p style="color: #666; font-size: 14px;">
+                <strong>Important:</strong>
+                <ul style="color: #666;">
+                    <li>This OTP is valid for {OTP_EXPIRY_MINUTES} minutes</li>
+                    <li>Do not share this OTP with anyone</li>
+                    <li>If you didn't request this, please ignore this email</li>
+                </ul>
+            </p>
+            
+            <div style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 20px;">
+                <p style="color: #999; font-size: 12px; margin: 0;">
+                    This is an automated message from FormMaster Pro. Please do not reply to this email.
+                </p>
+            </div>
+        </div>
+    </div>
+    '''
+    
+    return send_email(email, subject, html_content)
 
 # Decorators
 def login_required(f):
@@ -904,7 +1164,103 @@ def get_navbar():
         }}
     </script>
     '''
-
+@app.route('/verify-otp', methods=['POST'])
+def verify_otp_endpoint():
+    """Endpoint for OTP verification - FIXED VERSION"""
+    try:
+        data = {}
+        
+        # Debug: Print request info
+        print(f"DEBUG: Request method: {request.method}")
+        print(f"DEBUG: Content-Type: {request.content_type}")
+        print(f"DEBUG: Is JSON: {request.is_json}")
+        print(f"DEBUG: Form data: {request.form}")
+        print(f"DEBUG: Raw data: {request.get_data(as_text=True)}")
+        
+        # Handle both JSON and form data properly
+        if request.is_json:
+            try:
+                data = request.get_json(force=True, silent=True)
+                if data is None:
+                    print("DEBUG: JSON parsing returned None")
+                    data = {}
+            except Exception as json_error:
+                print(f"JSON parse error: {json_error}")
+                data = {}
+        else:
+            # Handle form data
+            try:
+                data = request.form.to_dict()
+                print(f"DEBUG: Form data extracted: {data}")
+            except Exception as form_error:
+                print(f"Form data error: {form_error}")
+                data = {}
+        
+        # Debug logging
+        print(f"DEBUG: Received OTP verification data: {data}")
+        
+        # Extract data with proper error handling
+        email = data.get('email')
+        otp_code = data.get('otp') or data.get('otp_code')
+        purpose = data.get('purpose', 'login')
+        
+        # Debug extracted values
+        print(f"DEBUG: Extracted - email: {email}, otp: {otp_code}, purpose: {purpose}")
+        
+        # Validate required fields
+        if not email:
+            print("Error: Email is missing in request")
+            return jsonify({'success': False, 'error': 'Email is required'}), 400
+        
+        if not otp_code:
+            print("Error: OTP code is missing in request")
+            return jsonify({'success': False, 'error': 'OTP code is required'}), 400
+        
+        print(f"Verifying OTP for email: {email}, purpose: {purpose}")
+        
+        # Verify OTP
+        if verify_otp(email, otp_code, purpose):
+            print(f"OTP verified successfully for {email}")
+            
+            # For login OTP
+            if purpose == 'login' and 'pending_login' in session:
+                pending_user = session.pop('pending_login', {})
+                
+                session['user_id'] = pending_user.get('user_id')
+                session['email'] = pending_user.get('email')
+                session['name'] = pending_user.get('name')
+                session['role'] = pending_user.get('role')
+                session['department'] = pending_user.get('department')
+                
+                # Clear login attempts
+                session.pop('login_attempts', None)
+                
+                # Create success response
+                response_data = {
+                    'success': True, 
+                    'message': 'Login successful!',
+                    'redirect': '/dashboard'
+                }
+                print(f"Login successful, returning: {response_data}")
+                return jsonify(response_data)
+            
+            elif purpose == 'registration':
+                return jsonify({'success': True, 'message': 'OTP verified successfully'})
+            
+            elif purpose == 'password_reset':
+                return jsonify({'success': True, 'message': 'OTP verified successfully'})
+            else:
+                return jsonify({'success': True, 'message': 'OTP verified'})
+                
+        else:
+            print(f"Invalid or expired OTP for {email}")
+            return jsonify({'success': False, 'error': 'Invalid or expired OTP'}), 400
+            
+    except Exception as e:
+        print(f"OTP verification error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
+    
 # Generate share token
 def generate_share_token():
     return secrets.token_urlsafe(32)
@@ -934,14 +1290,177 @@ def ensure_form_has_share_token(form_id):
 def index():
     return redirect('/login')
 
+def get_csrf_token():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(16)
+    return session['csrf_token']
+
+def validate_csrf_token(token):
+    """Validate CSRF token"""
+    if 'csrf_token' not in session:
+        return False
+    return secrets.compare_digest(session.get('csrf_token', ''), token or '')
+# Add to your login forms:
+# First, let's fix the login route to handle both JSON and form data properly
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if request.method == 'GET':
+        csrf_token = get_csrf_token()
+        
+        # Show login form with CSRF token
+        content = f'''
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Login - FormMaster Pro</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+            <style>
+                body {{
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                    padding-top: 20px;
+                }}
+                .login-card {{
+                    background: rgba(255, 255, 255, 0.95);
+                    border-radius: 20px;
+                    box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+                    padding: 40px;
+                    margin-top: 20px;
+                }}
+                .alert {{
+                    border-radius: 10px;
+                    border: none;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="row justify-content-center">
+                    <div class="col-md-5">
+                        <div class="login-card">
+                            <div class="text-center mb-4">
+                                <i class="fas fa-poll fa-3x text-primary mb-3"></i>
+                                <h3>Welcome to FormMaster Pro</h3>
+                                <p class="text-muted">Secure Login with OTP Verification</p>
+                            </div>
+                            
+                            <form method="POST" id="loginForm">
+                                <input type="hidden" name="csrf_token" value="{csrf_token}">
+                                <input type="hidden" name="login_stage" value="credentials">
+                                
+                                <div class="mb-3">
+                                    <label class="form-label">Email Address *</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text"><i class="fas fa-envelope"></i></span>
+                                        <input type="email" class="form-control" name="email" required 
+                                               placeholder="your@email.com" value="">
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label class="form-label">Password *</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text"><i class="fas fa-lock"></i></span>
+                                        <input type="password" class="form-control" name="password" required 
+                                               placeholder="••••••••">
+                                    </div>
+                                </div>
+                                
+                                <button type="submit" class="btn btn-primary w-100 mt-3">
+                                    <i class="fas fa-sign-in-alt me-2"></i>Sign In
+                                </button>
+                            </form>
+                            
+                            <hr class="my-4">
+                            
+                            <div class="text-center">
+                                <p class="mb-2">
+                                    <a href="/forgot-password" class="text-decoration-none">
+                                        <i class="fas fa-key me-1"></i>Forgot Password?
+                                    </a>
+                                </p>
+                                <p class="mb-0">
+                                    <span class="text-muted">Don't have an account?</span>
+                                    <a href="/register" class="text-decoration-none fw-bold ms-1">
+                                        Sign Up Now
+                                    </a>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <script>
+                // Simple form validation
+                document.getElementById('loginForm').addEventListener('submit', function(e) {{
+                    const email = this.querySelector('input[name="email"]').value;
+                    const password = this.querySelector('input[name="password"]').value;
+                    
+                    if (!email || !password) {{
+                        e.preventDefault();
+                        alert('Please fill in all required fields');
+                        return false;
+                    }}
+                    
+                    return true;
+                }});
+            </script>
+        </body>
+        </html>
+        '''
+        return content
+    
+    # POST request handling
     if request.method == 'POST':
         try:
-            email = request.form['email']
-            password = request.form['password']
+            print("DEBUG: Login POST request received")
+            print(f"DEBUG: Content-Type: {request.content_type}")
+            print(f"DEBUG: Is JSON: {request.is_json}")
+            print(f"DEBUG: Form data: {dict(request.form)}")
             
-            # FAST database query with minimal fields
+            # Get data based on content type
+            email = None
+            password = None
+            csrf_token_from_form = None
+            login_stage = 'credentials'
+            
+            if request.is_json:
+                data = request.get_json(silent=True) or {}
+                email = data.get('email')
+                password = data.get('password')
+                csrf_token_from_form = data.get('csrf_token')
+                login_stage = data.get('login_stage', 'credentials')
+            else:
+                # Form data
+                email = request.form.get('email', '').strip()
+                password = request.form.get('password', '').strip()
+                csrf_token_from_form = request.form.get('csrf_token')
+                login_stage = request.form.get('login_stage', 'credentials')
+            
+            print(f"DEBUG: Extracted - email: {email}, stage: {login_stage}")
+            print(f"DEBUG: CSRF token received: {csrf_token_from_form}")
+            print(f"DEBUG: Session CSRF token: {session.get('csrf_token')}")
+            
+            # Validate CSRF token
+            if not validate_csrf_token(csrf_token_from_form):
+                print("ERROR: CSRF token validation failed")
+                if request.is_json:
+                    return jsonify({'success': False, 'error': 'Invalid CSRF token'}), 400
+                else:
+                    return '''
+                    <script>
+                        alert("Security error: Invalid CSRF token. Please refresh the page and try again.");
+                        window.location.href = "/login";
+                    </script>
+                    '''
+            
+            print("DEBUG: CSRF token validation passed")
+            
+            # Check if user exists
             connection = get_db()
             user = None
             try:
@@ -954,599 +1473,1457 @@ def login():
             finally:
                 connection.close()
             
-            # Quick password check
-            if user and check_password(user['password'], password):
-                # Set session data immediately
-                session['user_id'] = user['id']
-                session['email'] = user['email']
-                session['name'] = user['name']
-                session['role'] = user['role']
-                session['department'] = user['department']
-                
-                # Background tasks (don't wait for these)
-                def background_tasks():
-                    try:
-                        # Create login notification
-                        conn = get_db()
-                        try:
-                            with conn.cursor() as cursor:
-                                cursor.execute('''
-                                    INSERT INTO notifications (user_id, title, message, type, link) 
-                                    VALUES (%s, %s, %s, %s, %s)
-                                ''', (user['id'], 'Login Successful', 
-                                      f'You logged in from {request.remote_addr}', 
-                                      'success', '/dashboard'))
-                                conn.commit()
-                        finally:
-                            conn.close()
-                        
-                        # Send email notification if enabled and not admin
-                        if (ENABLE_EMAIL_NOTIFICATIONS and 
-                            email != ADMIN_EMAIL and 
-                            email != SUPER_ADMIN_EMAIL):
-                            
-                            html_content = f'''
-                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                                <h2 style="color: #667eea;">Login Alert</h2>
-                                <p>Hello {user['name']},</p>
-                                <p>You have successfully logged into FormMaster Pro.</p>
-                                <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                                    <p><strong>Details:</strong></p>
-                                    <p>User: {user['name']}</p>
-                                    <p>Email: {user['email']}</p>
-                                    <p>Role: {user['role'].title()}</p>
-                                    <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                                </div>
-                                <p>If this wasn't you, please contact the system administrator immediately.</p>
-                            </div>
-                            '''
-                            send_email_async(user['email'], 'Login Alert - FormMaster Pro', html_content)
-                            
-                    except Exception as e:
-                        print(f"Login background task error: {e}")
-                
-                # Start background thread
-                threading.Thread(target=background_tasks, daemon=True).start()
-                
-                # Check redirect after login
-                redirect_url = session.pop('redirect_after_login', '/dashboard')
-                print(f"Login successful, redirecting to: {redirect_url}")
-                
-                # REDIRECT IMMEDIATELY (don't wait for background tasks)
-                return redirect(redirect_url)
-            else:
-                # Invalid credentials - return simple error
-                return '''
-                <script>
-                    alert("Invalid email or password");
-                    window.location.href = "/login";
-                </script>
-                '''
-                
-        except Exception as e:
-            print(f"Login error: {e}")
-            # Simple error response
-            return '''
-            <script>
-                alert("Login error. Please try again.");
-                window.location.href = "/login";
-            </script>
-            '''
-    
-    # GET request - show login form
-    # Check for redirect parameter
-    redirect_param = request.args.get('redirect', '')
-    if redirect_param:
-        session['redirect_after_login'] = redirect_param
-    
-    # Simple login form (no database queries in GET)
-    # In the login route, update the content variable:
-    # In the login route, update the content variable:
-    content = f'''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Login - FormMaster Pro</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-        <style>
-            body {{
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                padding-top: 20px;
-            }}
-            .logo-container {{
-                text-align: center;
-                margin-bottom: 30px;
-            }}
-            .logo {{
-                color: white;
-                font-size: 2.5rem;
-                font-weight: 700;
-                margin-bottom: 10px;
-                display: inline-block;
-                padding: 10px 30px;
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                border-radius: 15px;
-                border: 2px solid rgba(255, 255, 255, 0.2);
-            }}
-            .logo i {{
-                color: #ff6b6b;
-                margin-right: 10px;
-            }}
-            .logo-text {{
-                background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-            }}
-            .tagline {{
-                color: rgba(255, 255, 255, 0.8);
-                font-size: 1.1rem;
-                margin-top: 5px;
-            }}
-            .login-card {{
-                background: rgba(255, 255, 255, 0.95);
-                border-radius: 20px;
-                box-shadow: 0 15px 35px rgba(0,0,0,0.2);
-                padding: 40px;
-                margin-top: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-            }}
-            .btn-primary {{
-                background: linear-gradient(45deg, #667eea, #764ba2);
-                border: none;
-                padding: 12px 25px;
-                border-radius: 50px;
-                font-weight: 600;
-                width: 100%;
-                transition: all 0.3s;
-            }}
-            .btn-primary:hover {{
-                transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-            }}
-            .form-control {{
-                border-radius: 12px;
-                padding: 15px 20px;
-                border: 2px solid #e2e8f0;
-                transition: all 0.3s;
-            }}
-            .form-control:focus {{
-                border-color: #667eea;
-                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-            }}
-            .demo-accounts {{
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 10px;
-                padding: 15px;
-                margin-top: 20px;
-                color: white;
-                font-size: 0.9rem;
-            }}
-            .demo-accounts strong {{
-                color: #ffd166;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <!-- Logo Section -->
-            <div class="logo-container">
-                <div class="logo">
-                    <i class="fas fa-poll"></i>
-                    <span class="logo-text">FormMaster Pro</span>
-                </div>
-                <p class="tagline">Smart Forms for Modern Education</p>
-            </div>
+            print(f"DEBUG: User found: {user is not None}")
             
-            <div class="row justify-content-center">
-                <div class="col-md-5">
-                    <div class="login-card">
-                        <h3 class="text-center mb-4 text-dark">Welcome Back!</h3>
-                        <form method="POST" id="loginForm">
-                            <div class="mb-3">
-                                <label class="form-label text-dark">Email Address</label>
-                                <div class="input-group">
-                                    <span class="input-group-text bg-light">
-                                        <i class="fas fa-envelope text-muted"></i>
-                                    </span>
-                                    <input type="email" class="form-control" name="email" required 
-                                           placeholder="your@email.com" autocomplete="email">
+            # Stage 1: Check credentials
+            if login_stage == 'credentials':
+                if user and check_password(user['password'], password):
+                    print(f"DEBUG: Password check passed for {email}")
+                    
+                    # Check if user is admin/super_admin (skip OTP)
+                    if user['role'] in ['admin', 'super_admin']:
+                        print(f"DEBUG: Admin user {email}, skipping OTP")
+                        # Direct login for admin/super_admin
+                        session['user_id'] = user['id']
+                        session['email'] = user['email']
+                        session['name'] = user['name']
+                        session['role'] = user['role']
+                        session['department'] = user['department']
+                        
+                        # Background login notification
+                        def bg_login_notification():
+                            try:
+                                conn = get_db()
+                                with conn.cursor() as cursor:
+                                    cursor.execute('''
+                                        INSERT INTO notifications (user_id, title, message, type, link) 
+                                        VALUES (%s, %s, %s, %s, %s)
+                                    ''', (user['id'], 'Admin Login', 
+                                          f'Admin login from {request.remote_addr}', 
+                                          'success', '/dashboard'))
+                                    conn.commit()
+                                conn.close()
+                            except Exception as e:
+                                print(f"Admin login notification error: {e}")
+                        
+                        threading.Thread(target=bg_login_notification, daemon=True).start()
+                        
+                        if request.is_json:
+                            return jsonify({
+                                'success': True,
+                                'message': 'Login successful!',
+                                'redirect': '/dashboard'
+                            })
+                        else:
+                            return redirect('/dashboard')
+                    
+                    # If not admin/super_admin, proceed to OTP stage
+                    elif user and check_password(user['password'], password):
+                        print(f"DEBUG: Storing pending login for {email}")
+                        # Store pending login for OTP verification
+                        session['pending_login'] = {
+                            'user_id': user['id'],
+                            'email': user['email'],
+                            'name': user['name'],
+                            'role': user['role'],
+                            'department': user['department']
+                        }
+                        
+                        # Generate and send OTP
+                        print(f"DEBUG: Generating OTP for {email}")
+                        otp_code = store_otp(email, 'login')
+                        print(f"DEBUG: OTP generated: {otp_code}")
+                        
+                        if otp_code:
+                            print(f"DEBUG: Sending OTP email to {email}")
+                            email_sent = send_otp_email(email, otp_code, 'login')
+                            print(f"DEBUG: OTP email sent: {email_sent}")
+                        
+                        if request.is_json:
+                            return jsonify({
+                                'success': True,
+                                'message': 'OTP sent to your email',
+                                'stage': 'otp',
+                                'email': email
+                            })
+                        else:
+                            # Show OTP verification form
+                            csrf_token = get_csrf_token()
+                            content = f'''
+                            <!DOCTYPE html>
+                            <html lang="en">
+                            <head>
+                                <meta charset="UTF-8">
+                                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                                <title>OTP Verification - FormMaster Pro</title>
+                                <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+                                <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+                                <style>
+                                    body {{
+                                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                        min-height: 100vh;
+                                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                                        padding-top: 20px;
+                                    }}
+                                    .otp-card {{
+                                        background: rgba(255, 255, 255, 0.95);
+                                        border-radius: 20px;
+                                        box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+                                        padding: 40px;
+                                        margin-top: 20px;
+                                        border: 1px solid rgba(255, 255, 255, 0.3);
+                                    }}
+                                </style>
+                            </head>
+                            <body>
+                                <div class="container">
+                                    <div class="row justify-content-center">
+                                        <div class="col-md-5">
+                                            <div class="otp-card">
+                                                <h3 class="text-center mb-4 text-dark">
+                                                    <i class="fas fa-shield-alt me-2"></i>OTP Verification
+                                                </h3>
+                                                <p class="text-center text-muted mb-4">
+                                                    Enter the 6-digit OTP sent to:<br>
+                                                    <strong>{email}</strong>
+                                                </p>
+                                                
+                                                <form method="POST" id="otpForm">
+                                                    <input type="hidden" name="csrf_token" value="{csrf_token}">
+                                                    <input type="hidden" name="email" value="{email}">
+                                                    <input type="hidden" name="login_stage" value="otp">
+                                                    
+                                                    <div class="mb-4">
+                                                        <label class="form-label text-dark text-center d-block">OTP Code</label>
+                                                        <input type="text" class="form-control text-center fs-4" name="otp" required 
+                                                            maxlength="6" pattern="\\d{{6}}" 
+                                                            placeholder="000000" autocomplete="off"
+                                                            oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                                                    </div>
+                                                    
+                                                    <button type="submit" class="btn btn-primary w-100" id="verifyBtn">
+                                                        <i class="fas fa-check-circle me-2"></i>Verify OTP
+                                                    </button>
+                                                </form>
+                                                
+                                                <div class="mt-3 text-center">
+                                                    <button onclick="resendOTP('{email}')" class="btn btn-link">
+                                                        <i class="fas fa-redo me-1"></i>Resend OTP
+                                                    </button>
+                                                    <a href="/login" class="btn btn-link">Back to Login</a>
+                                                </div>
+                                                
+                                                <div class="mt-3 text-center">
+                                                    <small class="text-muted" id="countdown"></small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label text-dark">Password</label>
-                                <div class="input-group">
-                                    <span class="input-group-text bg-light">
-                                        <i class="fas fa-lock text-muted"></i>
-                                    </span>
-                                    <input type="password" class="form-control" name="password" required 
-                                           placeholder="••••••••" autocomplete="current-password">
+                                
+                                <script>
+                                    let timeLeft = {OTP_EXPIRY_MINUTES * 60};
+                                    
+                                    function updateCountdown() {{
+                                        const minutes = Math.floor(timeLeft / 60);
+                                        const seconds = timeLeft % 60;
+                                        document.getElementById('countdown').textContent = 
+                                            `OTP expires in: ${{minutes}}:${{seconds.toString().padStart(2, '0')}}`;
+                                    }}
+                                    
+                                    function startCountdown() {{
+                                        updateCountdown();
+                                        const interval = setInterval(() => {{
+                                            timeLeft--;
+                                            updateCountdown();
+                                            if (timeLeft <= 0) {{
+                                                clearInterval(interval);
+                                                document.getElementById('countdown').textContent = 'OTP expired!';
+                                                document.getElementById('countdown').className = 'text-danger';
+                                                document.getElementById('verifyBtn').disabled = true;
+                                            }}
+                                        }}, 1000);
+                                    }}
+                                    
+                                    function resendOTP(email) {{
+                                        fetch('/resend-otp', {{
+                                            method: 'POST',
+                                            headers: {{
+                                                'Content-Type': 'application/json',
+                                            }},
+                                            body: JSON.stringify({{
+                                                email: email,
+                                                purpose: 'login'
+                                            }})
+                                        }})
+                                        .then(res => res.json())
+                                        .then(data => {{
+                                            if (data.success) {{
+                                                alert('New OTP sent to your email!');
+                                                timeLeft = {OTP_EXPIRY_MINUTES * 60};
+                                                document.getElementById('verifyBtn').disabled = false;
+                                                startCountdown();
+                                            }} else {{
+                                                alert('Error: ' + data.error);
+                                            }}
+                                        }});
+                                    }}
+                                    
+                                    // Auto-focus OTP input and start countdown
+                                    document.addEventListener('DOMContentLoaded', function() {{
+                                        document.querySelector('input[name="otp"]').focus();
+                                        startCountdown();
+                                    }});
+                                </script>
+                            </body>
+                            </html>
+                            '''
+                            return content
+                else:
+                    print(f"DEBUG: Invalid credentials for {email}")
+                    # Invalid credentials
+                    csrf_token = get_csrf_token()
+                    error_html = f'''
+                    <div class="alert alert-danger">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        Invalid email or password. Please try again.
+                    </div>
+                    <form method="POST">
+                        <input type="hidden" name="csrf_token" value="{csrf_token}">
+                        <input type="hidden" name="login_stage" value="credentials">
+                        <div class="mb-3">
+                            <label class="form-label">Email Address</label>
+                            <input type="email" class="form-control" name="email" required 
+                                   placeholder="your@email.com" value="{email or ''}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Password</label>
+                            <input type="password" class="form-control" name="password" required 
+                                   placeholder="••••••••">
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100 mt-3">
+                            Sign In
+                        </button>
+                    </form>
+                    '''
+                    
+                    if request.is_json:
+                        return jsonify({'success': False, 'error': 'Invalid email or password'}), 400
+                    else:
+                        return html_wrapper('Login', f'''
+                        <div class="row justify-content-center">
+                            <div class="col-md-5">
+                                <div class="login-card">
+                                    <h3 class="text-center mb-4">Login</h3>
+                                    {error_html}
                                 </div>
-                            </div>
-                            <button type="submit" class="btn btn-primary mt-3" id="loginBtn">
-                                <span id="loginText">Sign In</span>
-                                <span id="loginSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
-                            </button>
-                        </form>
-                        
-                        <hr class="my-4">
-                        
-                        <p class="text-center mb-3">
-                            <span class="text-muted">Don't have an account?</span>
-                            <a href="/register" class="text-decoration-none fw-bold ms-1" style="color: #667eea;">
-                                Sign Up Now
-                            </a>
-                        </p>
-                        
-                        <div class="demo-accounts d-none d-md-block">
-                            <strong>Demo Accounts:</strong><br>
-                            <div class="text-dark">
-                                    <small>Admin: {ADMIN_EMAIL}</small><br>
-                                    <small>Super Admin: {SUPER_ADMIN_EMAIL}</small>
                             </div>
                         </div>
-                    </div>
+                        ''', '', '')
+            
+            # Stage 2: OTP verification
+            elif login_stage == 'otp':
+                print(f"DEBUG: OTP verification stage for {email}")
+                otp = request.form.get('otp', '').strip() if not request.is_json else request.get_json(silent=True, force=True).get('otp', '')
+                print(f"DEBUG: OTP received: {otp}")
+                
+                # Check if we have pending login
+                if 'pending_login' not in session:
+                    print("DEBUG: No pending login in session")
+                    if request.is_json:
+                        return jsonify({'success': False, 'error': 'No pending login session'}), 400
+                    else:
+                        return redirect('/login')
+                
+                pending_user = session['pending_login']
+                
+                print(f"DEBUG: Verifying OTP for {email}")
+                # Verify OTP
+                if verify_otp(email, otp, 'login'):
+                    print("DEBUG: OTP verified successfully")
+                    # OTP verified, complete login
+                    session.pop('pending_login', None)
+                    
+                    session['user_id'] = pending_user.get('user_id')
+                    session['email'] = pending_user.get('email')
+                    session['name'] = pending_user.get('name')
+                    session['role'] = pending_user.get('role')
+                    session['department'] = pending_user.get('department')
+                    
+                    # Clear login attempts
+                    session.pop('login_attempts', None)
+                    
+                    print(f"DEBUG: Login successful for {email}")
+                    
+                    # For AJAX requests
+                    if request.is_json:
+                        return jsonify({
+                            'success': True,
+                            'message': 'Login successful!',
+                            'redirect': '/dashboard'
+                        })
+                    else:
+                        # For form submissions
+                        return redirect('/dashboard')
+                else:
+                    print(f"DEBUG: Invalid OTP for {email}")
+                    if request.is_json:
+                        return jsonify({'success': False, 'error': 'Invalid or expired OTP'}), 400
+                    else:
+                        csrf_token = get_csrf_token()
+                        return f'''
+                        <script>
+                            alert("Invalid or expired OTP. Please try again.");
+                            window.location.href = "/login?stage=otp&email={email}";
+                        </script>
+                        '''
+            
+        except Exception as e:
+            print(f"Login error: {e}")
+            traceback.print_exc()
+            if request.is_json:
+                return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
+            else:
+                csrf_token = get_csrf_token()
+                return f'''
+                <div class="alert alert-danger">
+                    <h4>Login Error</h4>
+                    <p>Error: {str(e)}</p>
+                    <a href="/login" class="btn btn-primary">Try Again</a>
                 </div>
+                '''
+            
+
+@app.route('/debug/csrf')
+def debug_csrf():
+    """Debug CSRF tokens"""
+    current_token = session.get('csrf_token', 'No token in session')
+    return f'''
+    <div class="container mt-5">
+        <h2>CSRF Token Debug</h2>
+        <div class="card">
+            <div class="card-body">
+                <p><strong>Session CSRF Token:</strong> {current_token}</p>
+                <p><strong>Session ID:</strong> {session.sid}</p>
+                <p><strong>New CSRF Token:</strong> {get_csrf_token()}</p>
+                <form method="POST" action="/debug/csrf-test">
+                    <input type="hidden" name="csrf_token" value="{current_token}">
+                    <button type="submit" class="btn btn-primary">Test CSRF Validation</button>
+                </form>
             </div>
         </div>
-        
-        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-        <script>
-            $(document).ready(function() {{
-                $('#loginForm').on('submit', function(e) {{
-                    $('#loginText').addClass('d-none');
-                    $('#loginSpinner').removeClass('d-none');
-                    $('#loginBtn').prop('disabled', true);
-                }});
-                
-                // Add focus effects
-                $('.form-control').focus(function() {{
-                    $(this).parent().find('.input-group-text').css('border-color', '#667eea');
-                }}).blur(function() {{
-                    $(this).parent().find('.input-group-text').css('border-color', '#dee2e6');
-                }});
-            }});
-        </script>
-    </body>
-    </html>
+    </div>
     '''
-    return content
+
+@app.route('/debug/csrf-test', methods=['POST'])
+def debug_csrf_test():
+    csrf_token = request.form.get('csrf_token')
+    is_valid = validate_csrf_token(csrf_token)
+    return f'''
+    <div class="container mt-5">
+        <h2>CSRF Test Result</h2>
+        <div class="card">
+            <div class="card-body">
+                <p><strong>Token received:</strong> {csrf_token}</p>
+                <p><strong>Session token:</strong> {session.get('csrf_token')}</p>
+                <p><strong>Is valid:</strong> {is_valid}</p>
+                <a href="/debug/csrf" class="btn btn-primary">Back</a>
+            </div>
+        </div>
+    </div>
+    '''
+
+from werkzeug.exceptions import BadRequestKeyError
+
+@app.errorhandler(BadRequestKeyError)
+def handle_bad_request_key_error(e):
+    """Handle BadRequestKeyError specifically"""
+    print(f"BadRequestKeyError caught: {e}")
+    print(f"Request method: {request.method}")
+    print(f"Content-Type: {request.content_type}")
+    print(f"Form data: {dict(request.form)}")
+    print(f"JSON data: {request.get_json(silent=True)}")
+    
+    return jsonify({
+        'success': False,
+        'error': 'Invalid request format. Please check your input data.',
+        'details': str(e)
+    }), 400
+
+@app.before_request
+def log_request_info():
+    """Log request info for debugging"""
+    if request.endpoint in ['login', 'verify_otp_endpoint']:
+        print(f"\n=== REQUEST DEBUG ===")
+        print(f"Endpoint: {request.endpoint}")
+        print(f"Method: {request.method}")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Is JSON: {request.is_json}")
+        print(f"Headers: {dict(request.headers)}")
+        
+        if request.form:
+            print(f"Form data: {dict(request.form)}")
+        
+        if request.get_data():
+            print(f"Raw data (first 500 chars): {request.get_data(as_text=True)[:500]}")
+        print("=== END DEBUG ===\n")
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
         try:
-            name = request.form['name']
-            email = request.form['email']
-            password = request.form['password']
+            # Get form data safely
+            name = request.form.get('name', '').strip()
+            email = request.form.get('email', '').strip()
+            password = request.form.get('password', '').strip()
             role = request.form.get('role', 'student')
             department = request.form.get('department', 'IT')
+            otp = request.form.get('otp', '').strip()
+            register_stage = request.form.get('register_stage', 'details')
             
-            hashed = hash_password(password)
-            connection = get_db()
+            print(f"DEBUG: Registration stage={register_stage}, email={email}")
+            print(f"DEBUG: Session pending_registration: {'pending_registration' in session}")
             
-            try:
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        'INSERT INTO users (name, email, password, role, department) VALUES (%s, %s, %s, %s, %s)',
-                        (name, email, hashed, role, department)
-                    )
-                    connection.commit()
-                    
-                    cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
-                    user = cursor.fetchone()
+            # Stage 1: Check details and send OTP
+            if register_stage == 'details':
+                print("DEBUG: Stage 1 - Checking details")
+                # Check if email already exists
+                connection = get_db()
+                email_exists = False
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute('SELECT id FROM users WHERE email = %s', (email,))
+                        if cursor.fetchone():
+                            email_exists = True
+                finally:
+                    connection.close()
                 
-                connection.close()
-                
-                session['user_id'] = user['id']
-                session['email'] = user['email']
-                session['name'] = user['name']
-                session['role'] = user['role']
-                session['department'] = user['department']
-                
-                # Create welcome notification
-                create_notification(
-                    user_id=user['id'],
-                    title='Welcome to FormMaster Pro!',
-                    message=f'Your account has been created successfully as a {role} in the {department} department.',
-                    type='success',
-                    link='/dashboard'
-                )
-                
-                # Send registration confirmation email
-                if ENABLE_EMAIL_NOTIFICATIONS:
-                    html_content = f'''
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #667eea;">Welcome to FormMaster Pro!</h2>
-                        <p>Hello {name},</p>
-                        <p>Your account has been successfully created.</p>
-                        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                            <p><strong>Account Details:</strong></p>
-                            <p>Name: {name}</p>
-                            <p>Email: {email}</p>
-                            <p>Role: {role.title()}</p>
-                            <p>Department: {department}</p>
-                            <p>Registration Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                if email_exists:
+                    print(f"DEBUG: Email {email} already exists")
+                    # Return registration form with error
+                    departments_options = ''.join([f'<option value="{dept}" {"selected" if dept == department else ""}>{dept}</option>' for dept in DEPARTMENTS])
+                    content = f'''
+                    <div class="row justify-content-center">
+                        <div class="col-md-6">
+                            <div class="card glass-effect">
+                                <div class="card-body">
+                                    <h3 class="text-center mb-4">Register</h3>
+                                    <div class="alert alert-danger">
+                                        <i class="fas fa-exclamation-triangle me-2"></i>
+                                        Email already exists. Please use a different email or login.
+                                    </div>
+                                    <form method="POST">
+                                        <input type="hidden" name="register_stage" value="details">
+                                        <div class="mb-3">
+                                            <label>Full Name *</label>
+                                            <input type="text" class="form-control" name="name" required value="{name}">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label>Email *</label>
+                                            <input type="email" class="form-control" name="email" required value="{email}">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label>Password *</label>
+                                            <input type="password" class="form-control" name="password" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label>Role</label>
+                                            <select class="form-select" name="role">
+                                                <option value="student" {'selected' if role == 'student' else ''}>Student</option>
+                                                <option value="teacher" {'selected' if role == 'teacher' else ''}>Teacher</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label>Department *</label>
+                                            <select class="form-select" name="department" required>
+                                                <option value="">Select Department</option>
+                                                {departments_options}
+                                            </select>
+                                        </div>
+                                        <button type="submit" class="btn btn-primary w-100">
+                                            <i class="fas fa-envelope me-2"></i>Send OTP
+                                        </button>
+                                    </form>
+                                    <hr>
+                                    <p class="text-center">
+                                        <a href="/login">Already have an account? Login</a>
+                                    </p>
+                                </div>
+                            </div>
                         </div>
-                        <p>You can now login to your account and start using FormMaster Pro.</p>
-                        <a href="http://localhost:5000/login" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Login to Your Account</a>
-                        <hr>
-                        <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
                     </div>
                     '''
-                    send_email(email, 'Welcome to FormMaster Pro!', html_content)
+                    return html_wrapper('Register', content, '', '')
                 
-                return redirect('/dashboard')
-            except pymysql.err.IntegrityError:
-                connection.close()
-                departments_options = ''.join([f'<option value="{dept}">{dept}</option>' for dept in DEPARTMENTS])
+                # Store registration details in session
+                session['pending_registration'] = {
+                    'name': name,
+                    'email': email,
+                    'password': password,
+                    'role': role,
+                    'department': department
+                }
+                
+                # Generate and send OTP
+                print(f"DEBUG: Storing OTP for {email}")
+                otp_code = store_otp(email, 'registration')
+                print(f"DEBUG: OTP generated: {otp_code}")
+                
+                if otp_code:
+                    print(f"DEBUG: Attempting to send OTP email to {email}")
+                    email_sent = send_otp_email(email, otp_code, 'registration')
+                    print(f"DEBUG: OTP email sent: {email_sent}")
+                
+                # Show OTP verification page
                 content = f'''
                 <div class="row justify-content-center">
-                    <div class="col-md-6">
-                        <div class="card glass-effect">
+                    <div class="col-md-5">
+                        <div class="card">
+                            <div class="card-header bg-primary text-white">
+                                <h4 class="mb-0">Verify Your Email</h4>
+                            </div>
                             <div class="card-body">
-                                <h3 class="text-center mb-4">Register</h3>
-                                <div class="alert alert-danger">Email already exists</div>
+                                <div class="alert alert-info">
+                                    <i class="fas fa-envelope me-2"></i>
+                                    OTP sent to: <strong>{email}</strong>
+                                </div>
+                                
                                 <form method="POST">
+                                    <input type="hidden" name="email" value="{email}">
+                                    <input type="hidden" name="register_stage" value="otp">
+                                    
                                     <div class="mb-3">
-                                        <label>Full Name</label>
-                                        <input type="text" class="form-control" name="name" required>
+                                        <label class="form-label">Enter 6-digit OTP *</label>
+                                        <input type="text" class="form-control" name="otp" required 
+                                               maxlength="6" pattern="\\d{{6}}" 
+                                               placeholder="000000" autocomplete="off"
+                                               oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                                        <small class="text-muted">Check your email for the 6-digit code</small>
                                     </div>
-                                    <div class="mb-3">
-                                        <label>Email</label>
-                                        <input type="email" class="form-control" name="email" required>
+                                    
+                                    <div class="d-grid gap-2">
+                                        <button type="submit" class="btn btn-success">
+                                            <i class="fas fa-check-circle me-2"></i>Verify & Complete Registration
+                                        </button>
+                                        <button type="button" onclick="resendOTP('{email}')" class="btn btn-outline-primary">
+                                            <i class="fas fa-redo me-2"></i>Resend OTP
+                                        </button>
+                                        <a href="/register" class="btn btn-outline-secondary">
+                                            <i class="fas fa-arrow-left me-2"></i>Back
+                                        </a>
                                     </div>
-                                    <div class="mb-3">
-                                        <label>Password</label>
-                                        <input type="password" class="form-control" name="password" required>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label>Role</label>
-                                        <select class="form-select" name="role">
-                                            <option value="student">Student</option>
-                                            <option value="teacher">Teacher</option>
-                                        </select>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label>Department</label>
-                                        <select class="form-select" name="department" required>
-                                            {departments_options}
-                                        </select>
-                                    </div>
-                                    <button type="submit" class="btn btn-primary w-100">Register</button>
                                 </form>
-                                <hr>
-                                <p class="text-center">
-                                    <a href="/login">Already have an account? Login</a>
-                                </p>
+                                
+                                <div class="mt-3 text-center">
+                                    <small class="text-muted" id="countdown"></small>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
+                
+                <script>
+                    let timeLeft = {OTP_EXPIRY_MINUTES * 60};
+                    
+                    function updateCountdown() {{
+                        const minutes = Math.floor(timeLeft / 60);
+                        const seconds = timeLeft % 60;
+                        document.getElementById('countdown').textContent = 
+                            `OTP expires in: ${{minutes}}:${{seconds.toString().padStart(2, '0')}}`;
+                    }}
+                    
+                    function startCountdown() {{
+                        updateCountdown();
+                        const interval = setInterval(() => {{
+                            timeLeft--;
+                            updateCountdown();
+                            if (timeLeft <= 0) {{
+                                clearInterval(interval);
+                                document.getElementById('countdown').textContent = 'OTP expired!';
+                                document.getElementById('countdown').className = 'text-danger';
+                            }}
+                        }}, 1000);
+                    }}
+                    
+                    function resendOTP(email) {{
+                        fetch('/resend-otp', {{
+                            method: 'POST',
+                            headers: {{
+                                'Content-Type': 'application/json',
+                            }},
+                            body: JSON.stringify({{
+                                email: email,
+                                purpose: 'registration'
+                            }})
+                        }})
+                        .then(res => res.json())
+                        .then(data => {{
+                            if (data.success) {{
+                                alert('New OTP sent to your email!');
+                                timeLeft = {OTP_EXPIRY_MINUTES * 60};
+                                startCountdown();
+                            }} else {{
+                                alert('Error: ' + data.error);
+                            }}
+                        }})
+                        .catch(error => {{
+                            alert('Network error: ' + error);
+                        }});
+                    }}
+                    
+                    // Start countdown when page loads
+                    document.addEventListener('DOMContentLoaded', function() {{
+                        document.querySelector('input[name="otp"]').focus();
+                        startCountdown();
+                    }});
+                </script>
                 '''
-                return html_wrapper('Register', content, get_navbar(), '')
+                return html_wrapper('Verify Email', content, '', '')
+            
+            # Stage 2: OTP verification
+            elif register_stage == 'otp':
+                print(f"DEBUG: Stage 2 - OTP verification for {email}")
+                print(f"DEBUG: OTP provided: {otp}")
+                
+                # Check if we have pending registration
+                if 'pending_registration' not in session:
+                    print("DEBUG: No pending registration in session")
+                    return redirect('/register')
+                
+                pending_reg = session['pending_registration']
+                
+                # Verify OTP
+                print(f"DEBUG: Verifying OTP for {email}")
+                if verify_otp(email, otp, 'registration'):
+                    print("DEBUG: OTP verified successfully")
+                    # OTP verified, complete registration
+                    hashed = hash_password(pending_reg['password'])
+                    connection = get_db()
+                    
+                    try:
+                        with connection.cursor() as cursor:
+                            cursor.execute(
+                                'INSERT INTO users (name, email, password, role, department) VALUES (%s, %s, %s, %s, %s)',
+                                (pending_reg['name'], pending_reg['email'], hashed, pending_reg['role'], pending_reg['department'])
+                            )
+                            user_id = cursor.lastrowid
+                            
+                            cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,))
+                            user = cursor.fetchone()
+                            
+                            connection.commit()
+                        
+                        # Clear pending registration
+                        session.pop('pending_registration', None)
+                        
+                        # Auto-login after registration
+                        session['user_id'] = user['id']
+                        session['email'] = user['email']
+                        session['name'] = user['name']
+                        session['role'] = user['role']
+                        session['department'] = user['department']
+                        
+                        print(f"DEBUG: User {user['email']} registered successfully")
+                        
+                        # Background registration tasks
+                        def bg_registration_tasks():
+                            try:
+                                # Create welcome notification
+                                conn = get_db()
+                                with conn.cursor() as cursor:
+                                    cursor.execute('''
+                                        INSERT INTO notifications (user_id, title, message, type, link) 
+                                        VALUES (%s, %s, %s, %s, %s)
+                                    ''', (user['id'], 'Welcome to FormMaster Pro!',
+                                          f'Your account has been created successfully as a {user["role"]} in the {user["department"]} department.',
+                                          'success', '/dashboard'))
+                                    conn.commit()
+                                conn.close()
+                                
+                                # Send registration confirmation email
+                                if ENABLE_EMAIL_NOTIFICATIONS:
+                                    html_content = f'''
+                                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                                        <h2 style="color: #667eea;">Welcome to FormMaster Pro!</h2>
+                                        <p>Hello {user["name"]},</p>
+                                        <p>Your account has been successfully created with OTP verification.</p>
+                                        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                                            <p><strong>Account Details:</strong></p>
+                                            <p>Name: {user["name"]}</p>
+                                            <p>Email: {user["email"]}</p>
+                                            <p>Role: {user["role"].title()}</p>
+                                            <p>Department: {user["department"]}</p>
+                                            <p>Registration Date: {datetime.now().strftime("%%Y-%%m-%%d %%H:%%M:%%S")}</p>
+                                            <p><strong>Security:</strong> OTP verification enabled for future logins</p>
+                                        </div>
+                                        <p>You can now login to your account and start using FormMaster Pro.</p>
+                                        <a href="http://{request.host}/dashboard" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Go to Dashboard</a>
+                                        <hr>
+                                        <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
+                                    </div>
+                                    '''
+                                    send_email(user['email'], 'Welcome to FormMaster Pro!', html_content)
+                                    
+                            except Exception as e:
+                                print(f"Registration background task error: {e}")
+                        
+                        threading.Thread(target=bg_registration_tasks, daemon=True).start()
+                        
+                        # Show success message and redirect
+                        return f'''
+                        <script>
+                            alert('Registration successful! Welcome to FormMaster Pro.');
+                            window.location.href = '/dashboard';
+                        </script>
+                        '''
+                        
+                    except Exception as e:
+                        print(f"Database error during registration: {e}")
+                        connection.rollback()
+                        return html_wrapper('Error', f'''
+                        <div class="alert alert-danger">
+                            <h4>Registration Error</h4>
+                            <p>Error: {str(e)}</p>
+                            <a href="/register" class="btn btn-primary">Try Again</a>
+                        </div>
+                        ''', '', '')
+                    finally:
+                        connection.close()
+                else:
+                    print("DEBUG: Invalid or expired OTP")
+                    return f'''
+                    <script>
+                        alert("Invalid or expired OTP. Please try again.");
+                        window.location.href = "/register?stage=otp&email={email}";
+                    </script>
+                    '''
+            
+            else:
+                return redirect('/register')
+                
         except Exception as e:
             print(f"Register error: {e}")
             traceback.print_exc()
-            return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
-    
-    departments_options = ''.join([f'<option value="{dept}">{dept}</option>' for dept in DEPARTMENTS])
-    # In the register route, update the content variable:
-    content = f'''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Register - FormMaster Pro</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-        <style>
-            body {{
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                padding-top: 20px;
-            }}
-            .logo-container {{
-                text-align: center;
-                margin-bottom: 30px;
-            }}
-            .logo {{
-                color: white;
-                font-size: 2.5rem;
-                font-weight: 700;
-                margin-bottom: 10px;
-                display: inline-block;
-                padding: 10px 30px;
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                border-radius: 15px;
-                border: 2px solid rgba(255, 255, 255, 0.2);
-            }}
-            .logo i {{
-                color: #ff6b6b;
-                margin-right: 10px;
-            }}
-            .logo-text {{
-                background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-            }}
-            .tagline {{
-                color: rgba(255, 255, 255, 0.8);
-                font-size: 1.1rem;
-                margin-top: 5px;
-            }}
-            .register-card {{
-                background: rgba(255, 255, 255, 0.95);
-                border-radius: 20px;
-                box-shadow: 0 15px 35px rgba(0,0,0,0.2);
-                padding: 40px;
-                margin-top: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-            }}
-            .btn-success {{
-                background: linear-gradient(45deg, #10b981, #059669);
-                border: none;
-                padding: 12px 25px;
-                border-radius: 50px;
-                font-weight: 600;
-                width: 100%;
-                transition: all 0.3s;
-            }}
-            .btn-success:hover {{
-                transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(16, 185, 129, 0.4);
-            }}
-            .form-control, .form-select {{
-                border-radius: 12px;
-                padding: 15px 20px;
-                border: 2px solid #e2e8f0;
-                transition: all 0.3s;
-            }}
-            .form-control:focus, .form-select:focus {{
-                border-color: #667eea;
-                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-            }}
-            .input-group-text {{
-                background: #f8f9fa;
-                border: 2px solid #e2e8f0;
-                border-right: none;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <!-- Logo Section -->
-            <div class="logo-container">
-                <div class="logo">
-                    <i class="fas fa-poll"></i>
-                    <span class="logo-text">FormMaster Pro</span>
-                </div>
-                <p class="tagline">Smart Forms for Modern Education</p>
+            return html_wrapper('Error', f'''
+            <div class="alert alert-danger">
+                <h4>Registration Error</h4>
+                <p>Error: {str(e)}</p>
+                <a href="/register" class="btn btn-primary">Try Again</a>
             </div>
-            
-            <div class="row justify-content-center">
-                <div class="col-md-6">
-                    <div class="register-card">
-                        <h3 class="text-center mb-4 text-dark">Create Your Account</h3>
-                        <form method="POST" id="registerForm">
-                            <div class="mb-3">
-                                <label class="form-label text-dark">Full Name</label>
-                                <div class="input-group">
-                                    <span class="input-group-text bg-light">
-                                        <i class="fas fa-user text-muted"></i>
-                                    </span>
-                                    <input type="text" class="form-control" name="name" required 
-                                           placeholder="Enter your full name">
-                                </div>
-                            </div>
+            ''', '', '')
+    
+    # GET request - show appropriate form
+    register_stage = request.args.get('stage', 'details')
+    email = request.args.get('email', '')
+    
+    if register_stage == 'otp' and email:
+        # Show OTP verification form for registration
+        content = f'''
+        <div class="row justify-content-center">
+            <div class="col-md-5">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h4 class="mb-0">Verify Your Email</h4>
+                    </div>
+                    <div class="card-body">
+                        <div class="alert alert-info">
+                            <i class="fas fa-envelope me-2"></i>
+                            OTP sent to: <strong>{email}</strong>
+                        </div>
+                        
+                        <form method="POST">
+                            <input type="hidden" name="email" value="{email}">
+                            <input type="hidden" name="register_stage" value="otp">
                             
                             <div class="mb-3">
-                                <label class="form-label text-dark">Email Address</label>
-                                <div class="input-group">
-                                    <span class="input-group-text bg-light">
-                                        <i class="fas fa-envelope text-muted"></i>
-                                    </span>
-                                    <input type="email" class="form-control" name="email" required 
-                                           placeholder="your@email.com">
-                                </div>
+                                <label class="form-label">Enter 6-digit OTP *</label>
+                                <input type="text" class="form-control" name="otp" required 
+                                       maxlength="6" pattern="\\d{{6}}" 
+                                       placeholder="000000" autocomplete="off"
+                                       oninput="this.value = this.value.replace(/[^0-9]/g, '')">
+                                <small class="text-muted">Check your email for the 6-digit code</small>
                             </div>
                             
-                            <div class="mb-3">
-                                <label class="form-label text-dark">Password</label>
-                                <div class="input-group">
-                                    <span class="input-group-text bg-light">
-                                        <i class="fas fa-lock text-muted"></i>
-                                    </span>
-                                    <input type="password" class="form-control" name="password" required 
-                                           placeholder="Create a strong password">
-                                </div>
-                                <small class="text-muted">At least 8 characters with letters and numbers</small>
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-success">
+                                    <i class="fas fa-check-circle me-2"></i>Verify & Complete Registration
+                                </button>
+                                <button type="button" onclick="resendOTP('{email}')" class="btn btn-outline-primary">
+                                    <i class="fas fa-redo me-2"></i>Resend OTP
+                                </button>
+                                <a href="/register" class="btn btn-outline-secondary">
+                                    <i class="fas fa-arrow-left me-2"></i>Back to Registration
+                                </a>
                             </div>
-                            
-                            <div class="row">
-                                <div class="col-md-6 mb-3">
-                                    <label class="form-label text-dark">Role</label>
-                                    <select class="form-select" name="role">
-                                        <option value="student">Student</option>
-                                        <option value="teacher">Teacher</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-6 mb-3">
-                                    <label class="form-label text-dark">Department</label>
-                                    <select class="form-select" name="department" required>
-                                        <option value="">Select Department</option>
-                                        {' '.join([f'<option value="{dept}">{dept}</option>' for dept in DEPARTMENTS])}
-                                    </select>
-                                </div>
-                            </div>
-                            
-                            <div class="form-check mb-4">
-                                <input class="form-check-input" type="checkbox" id="terms" required>
-                                <label class="form-check-label text-dark" for="terms">
-                                    I agree to the <a href="#" class="text-decoration-none" style="color: #667eea;">Terms of Service</a> 
-                                    and <a href="#" class="text-decoration-none" style="color: #667eea;">Privacy Policy</a>
-                                </label>
-                            </div>
-                            
-                            <button type="submit" class="btn btn-success" id="registerBtn">
-                                <span id="registerText">Create Account</span>
-                                <span id="registerSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
-                            </button>
                         </form>
                         
-                        <hr class="my-4">
-                        
-                        <p class="text-center mb-0">
-                            <span class="text-muted">Already have an account?</span>
-                            <a href="/login" class="text-decoration-none fw-bold ms-1" style="color: #667eea;">
-                                Sign In Here
-                            </a>
-                        </p>
+                        <div class="mt-3 text-center">
+                            <small class="text-muted" id="countdown"></small>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
         
-        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
         <script>
-            $(document).ready(function() {{
-                $('#registerForm').on('submit', function(e) {{
-                    if (!$('#terms').is(':checked')) {{
-                        e.preventDefault();
-                        alert('Please agree to the Terms of Service');
-                        return;
+            let timeLeft = {OTP_EXPIRY_MINUTES * 60};
+            
+            function updateCountdown() {{
+                const minutes = Math.floor(timeLeft / 60);
+                const seconds = timeLeft % 60;
+                document.getElementById('countdown').textContent = 
+                    `OTP expires in: ${{minutes}}:${{seconds.toString().padStart(2, '0')}}`;
+            }}
+            
+            function startCountdown() {{
+                updateCountdown();
+                const interval = setInterval(() => {{
+                    timeLeft--;
+                    updateCountdown();
+                    if (timeLeft <= 0) {{
+                        clearInterval(interval);
+                        document.getElementById('countdown').textContent = 'OTP expired!';
+                        document.getElementById('countdown').className = 'text-danger';
                     }}
-                    $('#registerText').addClass('d-none');
-                    $('#registerSpinner').removeClass('d-none');
-                    $('#registerBtn').prop('disabled', true);
-                }});
-                
-                // Form validation
-                $('input[name="password"]').on('input', function() {{
-                    var password = $(this).val();
-                    var isValid = password.length >= 8 && /[A-Za-z]/.test(password) && /[0-9]/.test(password);
-                    if (password && !isValid) {{
-                        $(this).css('border-color', '#ef4444');
+                }}, 1000);
+            }}
+            
+            function resendOTP(email) {{
+                fetch('/resend-otp', {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                    }},
+                    body: JSON.stringify({{
+                        email: email,
+                        purpose: 'registration'
+                    }})
+                }})
+                .then(res => res.json())
+                .then(data => {{
+                    if (data.success) {{
+                        alert('New OTP sent to your email!');
+                        timeLeft = {OTP_EXPIRY_MINUTES * 60};
+                        startCountdown();
                     }} else {{
-                        $(this).css('border-color', isValid ? '#10b981' : '#e2e8f0');
+                        alert('Error: ' + data.error);
                     }}
+                }})
+                .catch(error => {{
+                    alert('Network error: ' + error);
                 }});
+            }}
+            
+            // Start countdown when page loads
+            document.addEventListener('DOMContentLoaded', function() {{
+                document.querySelector('input[name="otp"]').focus();
+                startCountdown();
             }});
         </script>
-    </body>
-    </html>
+        '''
+        return html_wrapper('Verify Email', content, '', '')
+    
+    # Default registration form (details stage)
+    departments_options = ''.join([f'<option value="{dept}">{dept}</option>' for dept in DEPARTMENTS])
+    
+    content = f'''
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="mb-0">Create New Account</h4>
+                    <p class="mb-0 text-muted">OTP verification required for security</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-shield-alt me-2"></i>
+                        <strong>Security Note:</strong> You'll receive an OTP via email to verify your account.
+                    </div>
+                    
+                    <form method="POST">
+                        <input type="hidden" name="register_stage" value="details">
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Full Name *</label>
+                            <input type="text" class="form-control" name="name" required 
+                                   placeholder="Enter your full name">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Email Address *</label>
+                            <input type="email" class="form-control" name="email" required 
+                                   placeholder="your@email.com">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Password *</label>
+                            <input type="password" class="form-control" name="password" required 
+                                   placeholder="Create a strong password">
+                            <small class="text-muted">At least 8 characters with letters and numbers</small>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Role *</label>
+                                <select class="form-select" name="role">
+                                    <option value="student">Student</option>
+                                    <option value="teacher">Teacher</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Department *</label>
+                                <select class="form-select" name="department" required>
+                                    <option value="">Select Department</option>
+                                    {departments_options}
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="form-check mb-4">
+                            <input class="form-check-input" type="checkbox" id="terms" required>
+                            <label class="form-check-label" for="terms">
+                                I agree to the <a href="#" class="text-decoration-none">Terms of Service</a> 
+                                and <a href="#" class="text-decoration-none">Privacy Policy</a>
+                            </label>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="fas fa-envelope me-2"></i>Send OTP & Continue
+                        </button>
+                    </form>
+                    
+                    <hr class="my-4">
+                    
+                    <p class="text-center mb-0">
+                        <span class="text-muted">Already have an account?</span>
+                        <a href="/login" class="text-decoration-none fw-bold ms-1">Login Here</a>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
     '''
     return html_wrapper('Register', content, '', '')
+
+# Add OTP resend endpoint
+@app.route('/resend-otp', methods=['POST'])
+def resend_otp():
+    """Resend OTP"""
+    try:
+        data = request.json
+        email = data.get('email')
+        purpose = data.get('purpose', 'login')
+        
+        if not email:
+            return jsonify({'success': False, 'error': 'Email required'})
+        
+        # Generate and send new OTP
+        otp_code = store_otp(email, purpose)
+        if otp_code:
+            send_otp_email(email, otp_code, purpose)
+            return jsonify({'success': True, 'message': 'OTP sent successfully'})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to generate OTP'})
+    except Exception as e:
+        print(f"Resend OTP error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+# Add password reset with OTP
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    """Password reset with OTP"""
+    if request.method == 'POST':
+        try:
+            email = request.form.get('email')
+            otp = request.form.get('otp', '')
+            new_password = request.form.get('new_password', '')
+            reset_stage = request.form.get('reset_stage', 'request')
+            
+            # Stage 1: Request OTP
+            if reset_stage == 'request':
+                # Check if user exists
+                connection = get_db()
+                user_exists = False
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute('SELECT id FROM users WHERE email = %s', (email,))
+                        if cursor.fetchone():
+                            user_exists = True
+                finally:
+                    connection.close()
+                
+                if not user_exists:
+                    return '''
+                    <script>
+                        alert("Email not found in our system.");
+                        window.location.href = "/forgot-password";
+                    </script>
+                    '''
+                
+                # Store email in session
+                session['password_reset_email'] = email
+                
+                # Generate and send OTP
+                otp_code = store_otp(email, 'password_reset')
+                if otp_code:
+                    send_otp_email(email, otp_code, 'password_reset')
+                    
+                return f'''
+                <script>
+                    alert("Password reset OTP sent to your email.");
+                    window.location.href = "/forgot-password?stage=verify&email={email}";
+                </script>
+                '''
+            
+            # Stage 2: Verify OTP
+            elif reset_stage == 'verify':
+                email = session.get('password_reset_email', email)
+                
+                if not email:
+                    return redirect('/forgot-password')
+                
+                if verify_otp(email, otp, 'password_reset'):
+                    session['otp_verified'] = True
+                    return f'''
+                    <script>
+                        alert("OTP verified. Please set your new password.");
+                        window.location.href = "/forgot-password?stage=reset&email={email}";
+                    </script>
+                    '''
+                else:
+                    return f'''
+                    <script>
+                        alert("Invalid or expired OTP.");
+                        window.location.href = "/forgot-password?stage=verify&email={email}";
+                    </script>
+                    '''
+            
+            # Stage 3: Reset password
+            elif reset_stage == 'reset':
+                email = session.get('password_reset_email')
+                
+                if not email or not session.get('otp_verified'):
+                    return redirect('/forgot-password')
+                
+                if not new_password or len(new_password) < 8:
+                    return '''
+                    <script>
+                        alert("Password must be at least 8 characters.");
+                        window.location.href = "/forgot-password?stage=reset";
+                    </script>
+                    '''
+                
+                # Update password
+                hashed = hash_password(new_password)
+                connection = get_db()
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute('UPDATE users SET password = %s WHERE email = %s', (hashed, email))
+                        connection.commit()
+                    
+                    # Clear session
+                    session.pop('password_reset_email', None)
+                    session.pop('otp_verified', None)
+                    
+                    # Send confirmation email
+                    if ENABLE_EMAIL_NOTIFICATIONS:
+                        html_content = f'''
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                            <h2 style="color: #10b981;">Password Reset Successful</h2>
+                            <p>Your password has been successfully reset.</p>
+                            <div style="background: #f0f9ff; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                                <p><strong>Reset Details:</strong></p>
+                                <p>Email: {email}</p>
+                                <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                            </div>
+                            <p>If you didn't request this password reset, please contact support immediately.</p>
+                        </div>
+                        '''
+                        send_email(email, 'Password Reset Successful - FormMaster Pro', html_content)
+                    
+                    return '''
+                    <script>
+                        alert("Password reset successful! You can now login with your new password.");
+                        window.location.href = "/login";
+                    </script>
+                    '''
+                    
+                except Exception as e:
+                    print(f"Password reset error: {e}")
+                    return '''
+                    <script>
+                        alert("Error resetting password. Please try again.");
+                        window.location.href = "/forgot-password";
+                    </script>
+                    '''
+                finally:
+                    connection.close()
+            
+        except Exception as e:
+            print(f"Forgot password error: {e}")
+            return '''
+            <script>
+                alert("Error processing request. Please try again.");
+                window.location.href = "/forgot-password";
+            </script>
+            '''
+    
+    # GET request
+    reset_stage = request.args.get('stage', 'request')
+    email = request.args.get('email', '')
+    
+    if reset_stage == 'verify':
+        content = f'''
+        <div class="row justify-content-center">
+            <div class="col-md-5">
+                <div class="card">
+                    <div class="card-header bg-warning">
+                        <h4 class="mb-0">Verify OTP</h4>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted">Enter the OTP sent to: <strong>{email}</strong></p>
+                        
+                        <form method="POST">
+                            <input type="hidden" name="reset_stage" value="verify">
+                            <input type="hidden" name="email" value="{email}">
+                            
+                            <div class="mb-3">
+                                <label class="form-label">OTP Code</label>
+                                <input type="text" class="form-control" name="otp" required 
+                                       maxlength="6" placeholder="000000">
+                            </div>
+                            
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-primary">Verify OTP</button>
+                                <button type="button" onclick="resendPasswordResetOTP('{email}')" class="btn btn-outline-secondary">
+                                    Resend OTP
+                                </button>
+                                <a href="/forgot-password" class="btn btn-outline-danger">Cancel</a>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            function resendPasswordResetOTP(email) {{
+                fetch('/resend-otp', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{
+                        email: email,
+                        purpose: 'password_reset'
+                    }})
+                }})
+                .then(res => res.json())
+                .then(data => {{
+                    if (data.success) {{
+                        alert('New OTP sent!');
+                    }} else {{
+                        alert('Error: ' + data.error);
+                    }}
+                }});
+            }}
+        </script>
+        '''
+        return html_wrapper('Verify OTP', content, '', '')
+    
+    elif reset_stage == 'reset':
+        content = f'''
+        <div class="row justify-content-center">
+            <div class="col-md-5">
+                <div class="card">
+                    <div class="card-header bg-success text-white">
+                        <h4 class="mb-0">Set New Password</h4>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted">For: <strong>{email}</strong></p>
+                        
+                        <form method="POST">
+                            <input type="hidden" name="reset_stage" value="reset">
+                            <input type="hidden" name="email" value="{email}">
+                            
+                            <div class="mb-3">
+                                <label class="form-label">New Password</label>
+                                <input type="password" class="form-control" name="new_password" required 
+                                       minlength="8" placeholder="Enter new password">
+                                <small class="text-muted">Minimum 8 characters</small>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Confirm Password</label>
+                                <input type="password" class="form-control" name="confirm_password" required 
+                                       placeholder="Confirm new password">
+                            </div>
+                            
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-success">Reset Password</button>
+                                <a href="/login" class="btn btn-outline-secondary">Back to Login</a>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            // Password confirmation validation
+            document.querySelector('form').addEventListener('submit', function(e) {{
+                const password = document.querySelector('input[name="new_password"]').value;
+                const confirm = document.querySelector('input[name="confirm_password"]').value;
+                
+                if (password !== confirm) {{
+                    e.preventDefault();
+                    alert('Passwords do not match!');
+                }}
+            }});
+        </script>
+        '''
+        return html_wrapper('Reset Password', content, '', '')
+    
+    # Default: Request password reset
+    content = '''
+    <div class="row justify-content-center">
+        <div class="col-md-5">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="mb-0">Forgot Password</h4>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-key me-2"></i>
+                        Enter your email to receive a password reset OTP.
+                    </div>
+                    
+                    <form method="POST">
+                        <input type="hidden" name="reset_stage" value="request">
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Email Address</label>
+                            <input type="email" class="form-control" name="email" required 
+                                   placeholder="your@email.com">
+                        </div>
+                        
+                        <div class="d-grid gap-2">
+                            <button type="submit" class="btn btn-primary">Send Reset OTP</button>
+                            <a href="/login" class="btn btn-outline-secondary">Back to Login</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    '''
+    return html_wrapper('Forgot Password', content, '', '')
+
+# Add admin-only direct user creation (without OTP)
+@app.route('/admin/create-user', methods=['GET', 'POST'])
+@admin_required
+def admin_create_user():
+    """Admin-only user creation (no OTP required)"""
+    if request.method == 'POST':
+        try:
+            name = request.form['name']
+            email = request.form['email']
+            password = request.form['password']
+            role = request.form['role']
+            department = request.form['department']
+            
+            # Check if email exists
+            connection = get_db()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute('SELECT id FROM users WHERE email = %s', (email,))
+                    if cursor.fetchone():
+                        connection.close()
+                        return jsonify({'success': False, 'error': 'Email already exists'})
+                    
+                    hashed = hash_password(password)
+                    cursor.execute(
+                        'INSERT INTO users (name, email, password, role, department) VALUES (%s, %s, %s, %s, %s)',
+                        (name, email, hashed, role, department)
+                    )
+                    user_id = cursor.lastrowid
+                    
+                    connection.commit()
+                    
+                    # Create notification for admin
+                    create_notification(
+                        user_id=session['user_id'],
+                        title='User Created',
+                        message=f'Created user {name} ({email}) as {role}',
+                        type='success',
+                        link='/admin'
+                    )
+                    
+                    # Send welcome email to new user
+                    if ENABLE_EMAIL_NOTIFICATIONS:
+                        html_content = f'''
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                            <h2 style="color: #667eea;">Account Created by Administrator</h2>
+                            <p>Hello {name},</p>
+                            <p>Your account has been created by an administrator.</p>
+                            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                                <p><strong>Account Details:</strong></p>
+                                <p>Name: {name}</p>
+                                <p>Email: {email}</p>
+                                <p>Role: {role.title()}</p>
+                                <p>Department: {department}</p>
+                                <p>Created By: {session['name']}</p>
+                            </div>
+                            <p>You can now login to your account.</p>
+                            <a href="http://localhost:5000/login" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Login Now</a>
+                            <p><strong>Note:</strong> { 'You will need OTP verification for login.' if role in ['student', 'teacher'] else 'Admin accounts can login directly without OTP.'}</p>
+                        </div>
+                        '''
+                        send_email(email, 'Account Created - FormMaster Pro', html_content)
+                    
+                    return jsonify({'success': True, 'message': 'User created successfully'})
+                    
+            finally:
+                connection.close()
+                
+        except Exception as e:
+            print(f"Admin create user error: {e}")
+            return jsonify({'success': False, 'error': str(e)})
+    
+    # GET request - show form
+    departments_options = ''.join([f'<option value="{dept}">{dept}</option>' for dept in DEPARTMENTS])
+    
+    content = f'''
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">
+                        <i class="fas fa-user-plus me-2"></i>Create User (Admin)
+                    </h4>
+                    <p class="mb-0">Direct user creation - No OTP required</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <strong>Admin Only:</strong> Users created here can login directly.
+                        { 'Non-admin users will still need OTP for future logins.'}
+                    </div>
+                    
+                    <form id="createUserForm">
+                        <div class="mb-3">
+                            <label class="form-label">Full Name *</label>
+                            <input type="text" class="form-control" name="name" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Email *</label>
+                            <input type="email" class="form-control" name="email" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Password *</label>
+                            <input type="password" class="form-control" name="password" required minlength="8">
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Role *</label>
+                                <select class="form-select" name="role" required>
+                                    <option value="student">Student</option>
+                                    <option value="teacher">Teacher</option>
+                                    <option value="admin">Admin</option>
+                                    <option value="super_admin">Super Admin</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Department *</label>
+                                <select class="form-select" name="department" required>
+                                    <option value="">Select Department</option>
+                                    {departments_options}
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="d-grid gap-2">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-save me-2"></i>Create User
+                            </button>
+                            <a href="/admin" class="btn btn-secondary">Back to Admin Panel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        $('#createUserForm').submit(function(e) {{
+            e.preventDefault();
+            
+            const formData = $(this).serialize();
+            
+            $.ajax({{
+                url: '/admin/create-user',
+                type: 'POST',
+                data: formData,
+                beforeSend: function() {{
+                    $('button[type="submit"]').prop('disabled', true).html('<i class="fas fa-spinner fa-spin me-2"></i>Creating...');
+                }},
+                success: function(response) {{
+                    if (response.success) {{
+                        alert('User created successfully!');
+                        window.location.href = '/admin';
+                    }} else {{
+                        alert('Error: ' + response.error);
+                        $('button[type="submit"]').prop('disabled', false).html('<i class="fas fa-save me-2"></i>Create User');
+                    }}
+                }},
+                error: function() {{
+                    alert('Network error. Please try again.');
+                    $('button[type="submit"]').prop('disabled', false).html('<i class="fas fa-save me-2"></i>Create User');
+                }}
+            }});
+        }});
+    </script>
+    '''
+    return html_wrapper('Create User', content, get_navbar(), '')
+
+# Add to admin panel a link to create users
+# Update the admin_panel route to include a "Create User" button
+# Add this in the admin_panel function's content, in the "Quick Actions" section:
+'''
+<div class="col-md-3 mb-3">
+    <a href="/admin/create-user" class="btn btn-outline-success w-100">
+        <i class="fas fa-user-plus me-2"></i>Create User
+    </a>
+</div>
+'''
+
+# Add cleanup job for expired OTPs (optional, can be run periodically)
+def cleanup_expired_otps():
+    """Clean up expired OTPs"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('DELETE FROM otps WHERE expires_at < NOW()')
+            connection.commit()
+        connection.close()
+        print(f"Cleaned up expired OTPs at {datetime.now()}")
+    except Exception as e:
+        print(f"Error cleaning up OTPs: {e}")
+
+# Schedule cleanup job (optional)
+import schedule
+import time
+
+def run_scheduler():
+    """Run scheduled jobs in background"""
+    schedule.every(1).hours.do(cleanup_expired_otps)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+# Start scheduler in background thread
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
 
 @app.route('/dashboard')
 @login_required
@@ -8338,7 +9715,6 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
-
 
 
 

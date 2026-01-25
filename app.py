@@ -6203,110 +6203,207 @@ def share_form(form_id):
         '''
         
         scripts = f'''
-        <script>
-            function copyToClipboard(elementId) {{
+       <script>
+            function copyToClipboard(elementId) {
                 const copyText = document.getElementById(elementId);
-                copyText.select();
-                copyText.setSelectionRange(0, 99999);
-                navigator.clipboard.writeText(copyText.value).then(() => {{
-                    // Show feedback
-                    const btn = event.target.closest('.copy-btn');
-                    const originalHTML = btn.innerHTML;
-                    btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-                    btn.classList.remove('btn-outline-primary');
-                    btn.classList.add('btn-success');
+                
+                // Create a temporary textarea for reliable copying
+                const tempTextArea = document.createElement('textarea');
+                tempTextArea.value = copyText.value;
+                tempTextArea.style.position = 'fixed';
+                tempTextArea.style.left = '-999999px';
+                tempTextArea.style.top = '-999999px';
+                document.body.appendChild(tempTextArea);
+                
+                tempTextArea.select();
+                tempTextArea.setSelectionRange(0, 99999);
+                
+                try {
+                    // Use the old execCommand method which works everywhere
+                    const successful = document.execCommand('copy');
                     
-                    setTimeout(() => {{
-                        btn.innerHTML = originalHTML;
-                        btn.classList.remove('btn-success');
-                        btn.classList.add('btn-outline-primary');
-                    }}, 2000);
+                    if (successful) {
+                        // Show success feedback
+                        const btn = document.querySelector('.copy-btn');
+                        const originalHTML = btn.innerHTML;
+                        btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                        btn.classList.remove('btn-outline-primary');
+                        btn.classList.add('btn-success');
+                        
+                        // Show toast
+                        showToast('Link copied to clipboard!', 'success');
+                        
+                        setTimeout(() => {
+                            btn.innerHTML = originalHTML;
+                            btn.classList.remove('btn-success');
+                            btn.classList.add('btn-outline-primary');
+                        }, 2000);
+                    } else {
+                        // Fallback for browsers that don't support execCommand
+                        fallbackCopyText(copyText);
+                    }
+                } catch (err) {
+                    // Fallback method
+                    fallbackCopyText(copyText);
+                }
+                
+                // Clean up
+                document.body.removeChild(tempTextArea);
+                
+                function fallbackCopyText(inputElement) {
+                    // Select the text
+                    inputElement.select();
+                    inputElement.setSelectionRange(0, 99999);
                     
-                    // Show toast notification
-                    showToast('Link copied to clipboard!', 'success');
-                }}).catch(err => {{
-                    console.error('Failed to copy: ', err);
-                    showToast('Failed to copy link', 'error');
-                }});
-            }}
+                    // Show instructions for manual copy
+                    const manualModal = `
+                    <div class="modal fade" id="manualCopyModal" tabindex="-1" aria-labelledby="manualCopyModalLabel" aria-hidden="true">
+                        <div class="modal-dialog">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title" id="manualCopyModalLabel">Copy Link</h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <p>Please select and copy the link below:</p>
+                                    <div class="input-group mb-3">
+                                        <input type="text" class="form-control" id="manualCopyInput" value="${inputElement.value}" readonly>
+                                        <button class="btn btn-outline-primary" onclick="selectAndCopy()">
+                                            <i class="fas fa-copy"></i> Select All
+                                        </button>
+                                    </div>
+                                    <div class="alert alert-info">
+                                        <i class="fas fa-info-circle me-2"></i>
+                                        <small>Press <kbd>Ctrl+C</kbd> (or <kbd>Cmd+C</kbd> on Mac) to copy the selected text</small>
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                    <button type="button" class="btn btn-primary" onclick="copyFromModal()">Copy</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    `;
+                    
+                    // Add modal to DOM if not exists
+                    if (!document.getElementById('manualCopyModal')) {
+                        const modalDiv = document.createElement('div');
+                        modalDiv.innerHTML = manualModal;
+                        document.body.appendChild(modalDiv);
+                    }
+                    
+                    // Show modal
+                    const modal = new bootstrap.Modal(document.getElementById('manualCopyModal'));
+                    modal.show();
+                    
+                    // Auto-select text after modal shows
+                    setTimeout(() => {
+                        const manualInput = document.getElementById('manualCopyInput');
+                        manualInput.select();
+                        manualInput.setSelectionRange(0, 99999);
+                    }, 300);
+                }
+            }
             
-            function togglePublicLink(formId) {{
+            function selectAndCopy() {
+                const input = document.getElementById('manualCopyInput');
+                input.select();
+                input.setSelectionRange(0, 99999);
+                showToast('Text selected. Press Ctrl+C to copy.', 'info');
+            }
+            
+            function copyFromModal() {
+                const input = document.getElementById('manualCopyInput');
+                input.select();
+                input.setSelectionRange(0, 99999);
+                
+                try {
+                    document.execCommand('copy');
+                    showToast('Link copied to clipboard!', 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('manualCopyModal')).hide();
+                } catch (err) {
+                    showToast('Please press Ctrl+C to copy manually', 'info');
+                }
+            }
+            
+            function togglePublicLink(formId) {
                 const isEnabled = document.getElementById('enablePublicLink').checked;
                 const button = event.target;
                 const originalText = button.nextElementSibling?.textContent || '';
                 
                 // Show loading state
                 button.disabled = true;
-                if (button.nextElementSibling) {{
+                if (button.nextElementSibling) {
                     button.nextElementSibling.textContent = ' Updating...';
-                }}
+                }
                 
-                fetch('/api/form/' + formId + '/toggle-public-link', {{
+                fetch('/api/form/' + formId + '/toggle-public-link', {
                     method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{enabled: isEnabled}})
-                }})
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled: isEnabled})
+                })
                 .then(res => res.json())
-                .then(data => {{
-                    if (data.success) {{
+                .then(data => {
+                    if (data.success) {
                         showToast('Public link ' + (isEnabled ? 'enabled' : 'disabled') + ' successfully!', 'success');
                         setTimeout(() => window.location.reload(), 1000);
-                    }} else {{
+                    } else {
                         showToast('Error: ' + data.error, 'error');
                         document.getElementById('enablePublicLink').checked = !isEnabled;
-                    }}
+                    }
                     button.disabled = false;
-                    if (button.nextElementSibling) {{
+                    if (button.nextElementSibling) {
                         button.nextElementSibling.textContent = originalText;
-                    }}
-                }})
-                .catch(error => {{
+                    }
+                })
+                .catch(error => {
                     showToast('Network error: ' + error, 'error');
                     document.getElementById('enablePublicLink').checked = !isEnabled;
                     button.disabled = false;
-                    if (button.nextElementSibling) {{
+                    if (button.nextElementSibling) {
                         button.nextElementSibling.textContent = originalText;
-                    }}
-                }});
-            }}
+                    }
+                });
+            }
             
-            function regenerateToken(formId) {{
-                if (confirm('Regenerate share link?\\\\n\\\\n⚠️ Warning: This will:\\\\n• Invalidate the previous link\\\\n• Make old links show "Form Not Found"\\\\n• Generate a new QR code')) {{
-                    fetch('/api/form/' + formId + '/regenerate-token', {{
+            function regenerateToken(formId) {
+                if (confirm('Regenerate share link?\\n\\n⚠️ Warning: This will:\\n• Invalidate the previous link\\n• Make old links show "Form Not Found"\\n• Generate a new QR code')) {
+                    fetch('/api/form/' + formId + '/regenerate-token', {
                         method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}}
-                    }})
+                        headers: {'Content-Type': 'application/json'}
+                    })
                     .then(res => res.json())
-                    .then(data => {{
-                        if (data.success) {{
+                    .then(data => {
+                        if (data.success) {
                             showToast('Share link regenerated successfully!', 'success');
                             setTimeout(() => window.location.reload(), 1000);
-                        }} else {{
+                        } else {
                             showToast('Error: ' + data.error, 'error');
-                        }}
-                    }});
-                }}
-            }}
+                        }
+                    });
+                }
+            }
             
-            function testShareLink() {{
+            function testShareLink() {
                 const link = document.getElementById('shareLink').value;
-                if (!link) {{
+                if (!link) {
                     showToast('No link to test', 'warning');
                     return;
-                }}
+                }
                 
-                if (!document.getElementById('enablePublicLink').checked) {{
-                    if (!confirm('Public link is currently disabled. The test will show "Form Not Found".\\\\n\\\\nEnable it first?')) {{
+                if (!document.getElementById('enablePublicLink').checked) {
+                    if (!confirm('Public link is currently disabled. The test will show "Form Not Found".\\n\\nEnable it first?')) {
                         return;
-                    }}
-                }}
+                    }
+                }
                 
                 // Open in new tab
                 window.open(link, '_blank');
                 showToast('Opening test link in new tab...', 'info');
-            }}
+            }
             
-            function downloadQRCode() {{
+            function downloadQRCode() {
                 const qrCodeUrl = '{qr_code_url}';
                 const link = document.createElement('a');
                 link.href = qrCodeUrl.replace('size=200x200', 'size=400x400');
@@ -6315,12 +6412,46 @@ def share_form(form_id):
                 link.click();
                 document.body.removeChild(link);
                 showToast('QR Code downloaded!', 'success');
-            }}
+            }
             
-            function showToast(message, type = 'info') {{
+            function showQRModal() {
+                const qrCodeUrl = '{qr_code_url}';
+                const modalHtml = `
+                <div class="modal fade" id="qrModal" tabindex="-1" aria-labelledby="qrModalLabel" aria-hidden="true">
+                    <div class="modal-dialog modal-sm">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="qrModalLabel">QR Code</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body text-center">
+                                <img src="${qrCodeUrl}" alt="QR Code" class="img-fluid mb-3" style="max-width: 200px;">
+                                <p class="text-muted small">Scan with your phone camera</p>
+                                <div class="mt-3">
+                                    <button onclick="downloadQRCode()" class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-download me-1"></i>Download
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                `;
+                
+                if (!document.getElementById('qrModal')) {
+                    const modalDiv = document.createElement('div');
+                    modalDiv.innerHTML = modalHtml;
+                    document.body.appendChild(modalDiv);
+                }
+                
+                const modal = new bootstrap.Modal(document.getElementById('qrModal'));
+                modal.show();
+            }
+            
+            function showToast(message, type = 'info') {
                 // Create toast container if not exists
                 let toastContainer = document.getElementById('toast-container');
-                if (!toastContainer) {{
+                if (!toastContainer) {
                     toastContainer = document.createElement('div');
                     toastContainer.id = 'toast-container';
                     toastContainer.style.position = 'fixed';
@@ -6328,43 +6459,64 @@ def share_form(form_id):
                     toastContainer.style.right = '20px';
                     toastContainer.style.zIndex = '9999';
                     document.body.appendChild(toastContainer);
-                }}
+                }
                 
                 // Create toast
                 const toastId = 'toast-' + Date.now();
                 const bgColor = type === 'success' ? 'bg-success' : type === 'error' ? 'bg-danger' : type === 'warning' ? 'bg-warning' : 'bg-info';
                 const toast = document.createElement('div');
                 toast.id = toastId;
-                toast.className = `toast align-items-center text-white ${{bgColor}} border-0`;
+                toast.className = `toast align-items-center text-white ${bgColor} border-0`;
                 toast.setAttribute('role', 'alert');
                 toast.setAttribute('aria-live', 'assertive');
                 toast.setAttribute('aria-atomic', 'true');
                 toast.innerHTML = `
                     <div class="d-flex">
                         <div class="toast-body">
-                            ${{message}}
+                            ${message}
                         </div>
                         <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
                     </div>
                 `;
                 
                 toastContainer.appendChild(toast);
-                const bsToast = new bootstrap.Toast(toast, {{delay: 3000}});
+                const bsToast = new bootstrap.Toast(toast, {delay: 3000});
                 bsToast.show();
                 
                 // Remove toast after hiding
-                toast.addEventListener('hidden.bs.toast', function () {{
+                toast.addEventListener('hidden.bs.toast', function () {
                     toast.remove();
-                }});
-            }}
+                });
+            }
             
-            // Initialize tooltips
-            document.addEventListener('DOMContentLoaded', function() {{
+            // Initialize tooltips and add keyboard shortcuts
+            document.addEventListener('DOMContentLoaded', function() {
                 var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-                var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {{
+                var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
                     return new bootstrap.Tooltip(tooltipTriggerEl);
-                }});
-            }});
+                });
+                
+                // Add click to select on input field
+                const shareLinkInput = document.getElementById('shareLink');
+                if (shareLinkInput) {
+                    shareLinkInput.addEventListener('click', function() {
+                        this.select();
+                        this.setSelectionRange(0, 99999);
+                        showToast('Text selected. Click the Copy button or press Ctrl+C.', 'info');
+                    });
+                }
+                
+                // Add keyboard shortcut for copying
+                document.addEventListener('keydown', function(e) {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+                        const activeElement = document.activeElement;
+                        if (activeElement.id === 'shareLink') {
+                            e.preventDefault();
+                            copyToClipboard('shareLink');
+                        }
+                    }
+                });
+            });
         </script>
         
         <style>
@@ -8295,6 +8447,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

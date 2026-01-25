@@ -1790,64 +1790,70 @@ def create_form():
     
     if request.method == 'POST':
         try:
+            # Get form data
             title = request.form.get('title', '').strip()
             description = request.form.get('description', '').strip()
             department = request.form.get('department', session['department'])
             form_type = request.form.get('form_type', 'open')
             
             if not title:
-                return html_wrapper('Error', '<div class="alert alert-danger">Title is required</div>', get_navbar(), '')
+                return jsonify({'error': 'Title is required'}), 400
             
+            # FAST DATABASE OPERATION ONLY
             connection = get_db()
-            with connection.cursor() as cursor:
-                # Generate share token
-                share_token = generate_share_token()
-                cursor.execute('''
-                    INSERT INTO forms (title, description, created_by, department, form_type, questions, share_token) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ''', (title, description, session['user_id'], department, form_type, '[]', share_token))
-                form_id = cursor.lastrowid
-                connection.commit()
-            connection.close()
+            form_id = None
             
-            # Create notification for form creation
-            create_notification(
-                user_id=session['user_id'],
-                title='Form Created Successfully',
-                message=f'Your form "{title}" has been created successfully.',
-                type='success',
-                link=f'/form/{form_id}/edit'
-            )
+            try:
+                with connection.cursor() as cursor:
+                    share_token = secrets.token_urlsafe(32)
+                    cursor.execute('''
+                        INSERT INTO forms (title, description, created_by, department, form_type, questions, share_token) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ''', (title, description, session['user_id'], department, form_type, '[]', share_token))
+                    form_id = cursor.lastrowid
+                    connection.commit()
+            finally:
+                connection.close()
             
-            # Send form creation email
-            if ENABLE_EMAIL_NOTIFICATIONS:
-                html_content = f'''
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #667eea;">New Form Created</h2>
-                    <p>Hello {session['name']},</p>
-                    <p>You have successfully created a new form.</p>
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                        <p><strong>Form Details:</strong></p>
-                        <p>Title: {title}</p>
-                        <p>Description: {description or 'No description'}</p>
-                        <p>Department: {department}</p>
-                        <p>Type: {form_type.title()}</p>
-                        <p>Created By: {session['name']}</p>
-                        <p>Creation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                    </div>
-                    <p>You can now edit the form to add questions and publish it.</p>
-                    <a href="http://localhost:5000/form/{form_id}/edit" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Edit Form</a>
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
-                </div>
-                '''
-                send_email(session['email'], 'New Form Created - FormMaster Pro', html_content)
+            # BACKGROUND TASKS - DON'T WAIT
+            def background_tasks():
+                try:
+                    # Notification
+                    conn = get_db()
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute('''
+                                INSERT INTO notifications (user_id, title, message, type, link) 
+                                VALUES (%s, %s, %s, %s, %s)
+                            ''', (session['user_id'], 'Form Created', 
+                                  f'Your form "{title}" has been created.', 
+                                  'success', f'/form/{form_id}/edit'))
+                            conn.commit()
+                    finally:
+                        conn.close()
+                    
+                    # Email
+                    if ENABLE_EMAIL_NOTIFICATIONS:
+                        html_content = f'''
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                            <h2 style="color: #667eea;">New Form Created</h2>
+                            <p>Hello {session["name"]},</p>
+                            <p>You have created: <strong>{title}</strong></p>
+                        </div>
+                        '''
+                        send_email_async(session['email'], 'Form Created - FormMaster Pro', html_content)
+                        
+                except Exception as e:
+                    print(f"Background task error: {e}")
             
+            # Start background thread
+            threading.Thread(target=background_tasks, daemon=True).start()
+            
+            # REDIRECT IMMEDIATELY
             return redirect(f'/form/{form_id}/edit')
             
         except Exception as e:
             print(f"Create form error: {e}")
-            traceback.print_exc()
             return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
     
     # Show all departments for admin/super_admin, only user's department for teachers
@@ -7825,39 +7831,57 @@ def export_system_data():
 # Update logout route
 @app.route('/logout')
 def logout():
-    """Logout user - Fast version"""
-    # Create notification in background
-    if 'user_id' in session:
-        # This can also be async
-        threading.Thread(
-            target=create_notification,
-            args=(session['user_id'], 'Logged Out', 'You have been logged out of the system.', 'info'),
-            daemon=True
-        ).start()
+    """Fast logout - no delays"""
+    # Save user info before clearing session
+    user_email = session.get('email')
+    user_name = session.get('name')
+    user_id = session.get('user_id')
     
-    # Send logout email in background if needed
-    if ENABLE_EMAIL_NOTIFICATIONS and 'email' in session and 'name' in session:
-        html_content = f'''
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #667eea;">Logout Alert</h2>
-            <p>Hello {session['name']},</p>
-            <p>You have been logged out of FormMaster Pro.</p>
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                <p><strong>Logout Details:</strong></p>
-                <p>User: {session['name']}</p>
-                <p>Email: {session['email']}</p>
-                <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            </div>
-            <p>If this wasn't you, please contact the system administrator immediately.</p>
-            <hr>
-            <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
-        </div>
-        '''
-        # Send email asynchronously
-        send_email_async(session['email'], 'Logout Alert - FormMaster Pro', html_content)
-    
-    # Clear session immediately
+    # Clear session IMMEDIATELY
     session.clear()
+    
+    # Background tasks (don't wait for these)
+    if user_id:
+        # Background notification
+        def bg_notification():
+            try:
+                conn = get_db()
+                with conn.cursor() as cursor:
+                    cursor.execute('''
+                        INSERT INTO notifications (user_id, title, message, type) 
+                        VALUES (%s, %s, %s, %s)
+                    ''', (user_id, 'Logged Out', 'You have been logged out of the system.', 'info'))
+                    conn.commit()
+                conn.close()
+            except Exception as e:
+                print(f"Background notification error: {e}")
+        
+        # Background email
+        def bg_email():
+            if ENABLE_EMAIL_NOTIFICATIONS and user_email and user_name:
+                try:
+                    html_content = f'''
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #667eea;">Logout Alert</h2>
+                        <p>Hello {user_name},</p>
+                        <p>You have been logged out of FormMaster Pro.</p>
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                            <p><strong>Logout Details:</strong></p>
+                            <p>User: {user_name}</p>
+                            <p>Email: {user_email}</p>
+                            <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                        </div>
+                    </div>
+                    '''
+                    send_email(user_email, 'Logout Alert - FormMaster Pro', html_content)
+                except Exception as e:
+                    print(f"Background email error: {e}")
+        
+        # Start background threads
+        threading.Thread(target=bg_notification, daemon=True).start()
+        threading.Thread(target=bg_email, daemon=True).start()
+    
+    # Redirect immediately
     return redirect('/login')
 
 # Add error handlers
@@ -7908,6 +7932,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

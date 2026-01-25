@@ -136,32 +136,37 @@ def send_email_async(to_email, subject, html_content):
         print(f"Error queueing email: {e}")
         return False
         
-# Email sending function
 def send_email(to_email, subject, html_content):
+    """Optimized email sending with timeout"""
     if not ENABLE_EMAIL_NOTIFICATIONS:
-        print(f"Email notifications disabled. Would send to {to_email}: {subject}")
         return True
     
     try:
+        # Set timeout to prevent hanging
+        import socket
+        original_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(5)  # 5 second timeout
+        
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
         msg['From'] = EMAIL_FROM
         msg['To'] = to_email
         
-        # Create HTML version
         html_part = MIMEText(html_content, 'html')
         msg.attach(html_part)
         
-        # Send email
-        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+        # Quick send
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=5) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASSWORD)
             server.send_message(msg)
         
-        print(f"Email sent to {to_email}: {subject}")
+        # Restore original timeout
+        socket.setdefaulttimeout(original_timeout)
         return True
+        
     except Exception as e:
-        print(f"Error sending email to {to_email}: {e}")
+        print(f"Quick email error to {to_email}: {e}")
         return False
 
 def init_db():
@@ -936,146 +941,196 @@ def login():
             email = request.form['email']
             password = request.form['password']
             
+            # FAST database query with minimal fields
             connection = get_db()
-            with connection.cursor() as cursor:
-                cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
-                user = cursor.fetchone()
-            connection.close()
+            user = None
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute('''
+                        SELECT id, email, name, role, department, password 
+                        FROM users WHERE email = %s LIMIT 1
+                    ''', (email,))
+                    user = cursor.fetchone()
+            finally:
+                connection.close()
             
+            # Quick password check
             if user and check_password(user['password'], password):
+                # Set session data immediately
                 session['user_id'] = user['id']
                 session['email'] = user['email']
                 session['name'] = user['name']
                 session['role'] = user['role']
                 session['department'] = user['department']
                 
-                # Send login notification email
-                if ENABLE_EMAIL_NOTIFICATIONS and email != ADMIN_EMAIL and email != SUPER_ADMIN_EMAIL:
-                    html_content = f'''
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #667eea;">Login Alert</h2>
-                        <p>Hello {user['name']},</p>
-                        <p>You have successfully logged into FormMaster Pro.</p>
-                        <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                            <p><strong>Details:</strong></p>
-                            <p>User: {user['name']}</p>
-                            <p>Email: {user['email']}</p>
-                            <p>Role: {user['role'].title()}</p>
-                            <p>Department: {user['department']}</p>
-                            <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                        </div>
-                        <p>If this wasn't you, please contact the system administrator immediately.</p>
-                        <hr>
-                        <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
-                    </div>
-                    '''
-                    send_email(email, 'Login Alert - FormMaster Pro', html_content)
-                
-                # Create login notification
-                create_notification(
-                    user_id=user['id'],
-                    title='Login Successful',
-                    message=f'You logged in successfully from {request.remote_addr}',
-                    type='success',
-                    link='/dashboard'
-                )
-                
-                # Check for redirect after login (from public share links)
-                if 'redirect_after_login' in session:
-                    redirect_url = session.pop('redirect_after_login')
-                    print(f"Redirecting to: {redirect_url}")  # Debug log
-                    return redirect(redirect_url)
-                
-                return redirect('/dashboard')
-            else:
-                content = f'''
-                <div class="row justify-content-center align-items-center" style="min-height: 80vh;">
-                    <div class="col-md-4">
-                        <div class="card glass-effect">
-                            <div class="card-body p-4">
-                                <h3 class="text-center mb-4 text-dark">Login</h3>
-                                <div class="alert alert-danger">Invalid email or password</div>
-                                <form method="POST">
-                                    <div class="mb-3">
-                                        <label class="form-label text-dark">Email</label>
-                                        <input type="email" class="form-control" name="email" required>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label text-dark">Password</label>
-                                        <input type="password" class="form-control" name="password" required>
-                                    </div>
-                                    <button type="submit" class="btn btn-primary w-100">Login</button>
-                                </form>
-                                <hr class="my-4">
-                                <p class="text-center">
-                                    <a href="/register" class="text-decoration-none">Create new account</a>
-                                </p>
-                                <div class="text-center text-muted small mt-3">
-                                    <strong>Default Admin:</strong><br>
-                                    Email: {ADMIN_EMAIL}<br>
-                                    Password: {ADMIN_PASSWORD}<br>
-                                    <strong>Super Admin:</strong><br>
-                                    Email: {SUPER_ADMIN_EMAIL}<br>
-                                    Password: {SUPER_ADMIN_PASSWORD}
+                # Background tasks (don't wait for these)
+                def background_tasks():
+                    try:
+                        # Create login notification
+                        conn = get_db()
+                        try:
+                            with conn.cursor() as cursor:
+                                cursor.execute('''
+                                    INSERT INTO notifications (user_id, title, message, type, link) 
+                                    VALUES (%s, %s, %s, %s, %s)
+                                ''', (user['id'], 'Login Successful', 
+                                      f'You logged in from {request.remote_addr}', 
+                                      'success', '/dashboard'))
+                                conn.commit()
+                        finally:
+                            conn.close()
+                        
+                        # Send email notification if enabled and not admin
+                        if (ENABLE_EMAIL_NOTIFICATIONS and 
+                            email != ADMIN_EMAIL and 
+                            email != SUPER_ADMIN_EMAIL):
+                            
+                            html_content = f'''
+                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                                <h2 style="color: #667eea;">Login Alert</h2>
+                                <p>Hello {user['name']},</p>
+                                <p>You have successfully logged into FormMaster Pro.</p>
+                                <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                                    <p><strong>Details:</strong></p>
+                                    <p>User: {user['name']}</p>
+                                    <p>Email: {user['email']}</p>
+                                    <p>Role: {user['role'].title()}</p>
+                                    <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                                 </div>
+                                <p>If this wasn't you, please contact the system administrator immediately.</p>
                             </div>
-                        </div>
-                    </div>
-                </div>
+                            '''
+                            send_email_async(user['email'], 'Login Alert - FormMaster Pro', html_content)
+                            
+                    except Exception as e:
+                        print(f"Login background task error: {e}")
+                
+                # Start background thread
+                threading.Thread(target=background_tasks, daemon=True).start()
+                
+                # Check redirect after login
+                redirect_url = session.pop('redirect_after_login', '/dashboard')
+                print(f"Login successful, redirecting to: {redirect_url}")
+                
+                # REDIRECT IMMEDIATELY (don't wait for background tasks)
+                return redirect(redirect_url)
+            else:
+                # Invalid credentials - return simple error
+                return '''
+                <script>
+                    alert("Invalid email or password");
+                    window.location.href = "/login";
+                </script>
                 '''
-                return html_wrapper('Login', content, get_navbar(), '')
+                
         except Exception as e:
             print(f"Login error: {e}")
-            traceback.print_exc()
-            return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+            # Simple error response
+            return '''
+            <script>
+                alert("Login error. Please try again.");
+                window.location.href = "/login";
+            </script>
+            '''
     
     # GET request - show login form
-    # Check if there's a redirect URL from public share link
+    # Check for redirect parameter
     redirect_param = request.args.get('redirect', '')
     if redirect_param:
         session['redirect_after_login'] = redirect_param
-        print(f"Set redirect after login to: {redirect_param}")  # Debug log
     
-    # Also check if user is already logged in but came from a public link
-    if 'user_id' in session and 'redirect_after_login' in session:
-        redirect_url = session.pop('redirect_after_login')
-        return redirect(redirect_url)
-    
+    # Simple login form (no database queries in GET)
     content = f'''
-    <div class="row justify-content-center align-items-center" style="min-height: 80vh;">
-        <div class="col-md-4">
-            <div class="card glass-effect">
-                <div class="card-body p-4">
-                    <h3 class="text-center mb-4 text-dark">Login</h3>
-                    <form method="POST">
-                        <div class="mb-3">
-                            <label class="form-label text-dark">Email</label>
-                            <input type="email" class="form-control" name="email" required>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Login - Form System</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+        <style>
+            body {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                padding-top: 70px;
+            }}
+            .login-card {{
+                background: rgba(255, 255, 255, 0.95);
+                border-radius: 15px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                padding: 40px;
+                margin-top: 50px;
+            }}
+            .btn-primary {{
+                background: linear-gradient(45deg, #667eea, #764ba2);
+                border: none;
+                padding: 12px 25px;
+                border-radius: 50px;
+                font-weight: 600;
+                width: 100%;
+            }}
+            .form-control {{
+                border-radius: 10px;
+                padding: 12px 15px;
+                border: 2px solid #e2e8f0;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="row justify-content-center">
+                <div class="col-md-4">
+                    <div class="login-card">
+                        <h3 class="text-center mb-4">Login</h3>
+                        <form method="POST" id="loginForm">
+                            <div class="mb-3">
+                                <label class="form-label">Email</label>
+                                <input type="email" class="form-control" name="email" required 
+                                       placeholder="your@email.com" autocomplete="email">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Password</label>
+                                <input type="password" class="form-control" name="password" required 
+                                       placeholder="••••••••" autocomplete="current-password">
+                            </div>
+                            <button type="submit" class="btn btn-primary" id="loginBtn">
+                                <span id="loginText">Login</span>
+                                <span id="loginSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                            </button>
+                        </form>
+                        <hr class="my-4">
+                        <p class="text-center">
+                            <a href="/register" class="text-decoration-none">Create new account</a>
+                        </p>
+                        <div class="text-center text-muted small mt-3">
+                            <strong>Demo Accounts:</strong><br>
+                            Admin: {ADMIN_EMAIL}<br>
+                            Super Admin: {SUPER_ADMIN_EMAIL}
                         </div>
-                        <div class="mb-3">
-                            <label class="form-label text-dark">Password</label>
-                            <input type="password" class="form-control" name="password" required>
-                        </div>
-                        <button type="submit" class="btn btn-primary w-100">Login</button>
-                    </form>
-                    <hr class="my-4">
-                    <p class="text-center">
-                        <a href="/register" class="text-decoration-none">Create new account</a>
-                    </p>
-                    <div class="text-center text-muted small mt-3">
-                        <strong>Default Admin:</strong><br>
-                        Email: {ADMIN_EMAIL}<br>
-                        Password: {ADMIN_PASSWORD}<br>
-                        <strong>Super Admin:</strong><br>
-                        Email: {SUPER_ADMIN_EMAIL}<br>
-                        Password: {SUPER_ADMIN_PASSWORD}
                     </div>
                 </div>
             </div>
         </div>
-    </div>
+        
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <script>
+            $(document).ready(function() {{
+                $('#loginForm').on('submit', function(e) {{
+                    // Show loading state
+                    $('#loginText').addClass('d-none');
+                    $('#loginSpinner').removeClass('d-none');
+                    $('#loginBtn').prop('disabled', true);
+                    
+                    // Form will submit normally
+                }});
+            }});
+        </script>
+    </body>
+    </html>
     '''
-    return html_wrapper('Login', content, '', '')
+    return content
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -7925,6 +7980,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

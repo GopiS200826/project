@@ -197,33 +197,33 @@ def init_db():
                             INDEX idx_department (department)
                             )''')
             
-            # Forms table with all columns
+            # In the init_db() function, update the forms table creation:
             cursor.execute('''CREATE TABLE IF NOT EXISTS forms (
-                            id INT AUTO_INCREMENT PRIMARY KEY,
-                            title VARCHAR(200) NOT NULL,
-                            description TEXT,
-                            created_by INT NOT NULL,
-                            department VARCHAR(50) NOT NULL,
-                            form_type ENUM('open', 'confidential') DEFAULT 'open',
-                            questions JSON,
-                            is_published BOOLEAN DEFAULT FALSE,
-                            is_student_submission BOOLEAN DEFAULT FALSE,
-                            review_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
-                            reviewed_by INT,
-                            reviewed_at TIMESTAMP NULL,
-                            share_token VARCHAR(100) UNIQUE,
-                            public_link_enabled BOOLEAN DEFAULT FALSE,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
-                            FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
-                            INDEX idx_created_by (created_by),
-                            INDEX idx_department_form (department),
-                            INDEX idx_form_type (form_type),
-                            INDEX idx_student_submission (is_student_submission),
-                            INDEX idx_review_status (review_status),
-                            INDEX idx_share_token (share_token)
-                            )''')
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                description TEXT,
+                created_by INT NOT NULL,
+                department VARCHAR(50) NOT NULL,
+                form_type ENUM('public', 'open', 'confidential') DEFAULT 'open',  # CHANGED: Added 'public'
+                questions JSON,
+                is_published BOOLEAN DEFAULT FALSE,
+                is_student_submission BOOLEAN DEFAULT FALSE,
+                review_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
+                reviewed_by INT,
+                reviewed_at TIMESTAMP NULL,
+                share_token VARCHAR(100) UNIQUE,
+                public_link_enabled BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+                INDEX idx_created_by (created_by),
+                INDEX idx_department_form (department),
+                INDEX idx_form_type (form_type),
+                INDEX idx_student_submission (is_student_submission),
+                INDEX idx_review_status (review_status),
+                INDEX idx_share_token (share_token)
+            )''')
             
             # Notifications table
             cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
@@ -1614,14 +1614,21 @@ def dashboard():
             
             # Get assigned forms for students
             assigned_forms = []
+            # In the dashboard() function, update the student forms query:
             if user_role == 'student':
                 cursor.execute('''
-                    SELECT f.*, a.due_date, a.is_completed 
-                    FROM forms f
-                    JOIN assignments a ON f.id = a.form_id
-                    WHERE a.student_id = %s AND f.review_status = 'approved'
-                ''', (user_id,))
-                assigned_forms = cursor.fetchall()
+                    SELECT f.*, u.name as creator_name,
+                           (SELECT status FROM form_requests WHERE form_id = f.id AND student_id = %s) as request_status,
+                           (SELECT 1 FROM assignments WHERE form_id = f.id AND student_id = %s) as is_assigned,
+                           (SELECT 1 FROM responses WHERE form_id = f.id AND student_id = %s) as has_submitted
+                    FROM forms f 
+                    JOIN users u ON f.created_by = u.id 
+                    WHERE f.department = %s 
+                    AND (f.form_type = 'public' OR f.form_type = 'open')  # CHANGED: Added 'public'
+                    AND (f.is_student_submission = FALSE OR f.review_status = 'approved')
+                    ORDER BY f.created_at DESC
+                ''', (user_id, user_id, user_id, user_dept))
+                forms = cursor.fetchall()
             
             # Get pending requests count for teachers/admin
             pending_requests_count = 0
@@ -1769,8 +1776,9 @@ def dashboard():
         for form in forms:
             status_badge = 'badge-success' if form['is_published'] else 'badge-warning'
             status_text = 'Published' if form['is_published'] else 'Draft'
-            type_badge = 'badge-info' if form['form_type'] == 'open' else 'badge-purple'
-            type_text = 'Open' if form['form_type'] == 'open' else 'Confidential'
+            # In the dashboard() function, update the type_badge logic:
+            type_badge = 'badge-info' if form['form_type'] == 'open' else 'badge-success' if form['form_type'] == 'public' else 'badge-purple'  # CHANGED
+            type_text = 'Open' if form['form_type'] == 'open' else 'Public' if form['form_type'] == 'public' else 'Confidential'  # CHANGED
             
             # Check if it's a student submission
             student_badge = ''
@@ -1836,6 +1844,7 @@ def dashboard():
                     '''
             
             # Student actions for taking forms
+            # In the dashboard() function, update the student_actions logic:
             if user_role == 'student':
                 if has_submitted:
                     student_actions = '<span class="badge bg-success"><i class="fas fa-check"></i> Submitted</span>'
@@ -1848,7 +1857,11 @@ def dashboard():
                 elif request_status == 'rejected':
                     student_actions = '<span class="badge bg-danger"><i class="fas fa-times"></i> Request Rejected</span>'
                 else:
-                    student_actions = f'<button onclick="requestForm({form["id"]})" class="btn btn-sm btn-outline-purple"><i class="fas fa-hand-paper"></i> Request Access</button>'
+                    # Check if form is public
+                    if form['form_type'] == 'public':
+                        student_actions = f'<a href="/form/{form["id"]}/take" class="btn btn-sm btn-success"><i class="fas fa-play"></i> Take Public Test</a>'
+                    else:
+                        student_actions = f'<button onclick="requestForm({form["id"]})" class="btn btn-sm btn-outline-purple"><i class="fas fa-hand-paper"></i> Request Access</button>'
             
             # For admin, show creator's department
             dept_info = f'<i class="fas fa-building me-1"></i>{form["department"]}'
@@ -2146,6 +2159,8 @@ def create_form():
                             <h2 style="color: #667eea;">New Form Created</h2>
                             <p>Hello {session["name"]},</p>
                             <p>You have created: <strong>{title}</strong></p>
+                            <p><strong>Type:</strong> {form_type.upper()}</p>
+                            {'<p class="text-success"><strong>✓ PUBLIC FORM:</strong> Students from your department can take this form without requesting access.</p>' if form_type == 'public' else ''}
                         </div>
                         '''
                         send_email_async(session['email'], 'Form Created - FormMaster Pro', html_content)
@@ -2197,11 +2212,14 @@ def create_form():
                         <div class="mb-3">
                             <label class="form-label">Form Type *</label>
                             <select class="form-select" name="form_type" required>
+                                <option value="public">Public - Students from selected department can take without requesting</option>
                                 <option value="open">Open - Students can request to take</option>
                                 <option value="confidential">Confidential - Students must request access</option>
                             </select>
                             <small class="text-muted">
-                                For both types, students need to request access. You'll need to approve their requests.
+                                <strong>Public Forms:</strong> Students from the selected department can take the test immediately without requesting access.<br>
+                                <strong>Open Forms:</strong> Students need to request access and await approval.<br>
+                                <strong>Confidential Forms:</strong> Students must request access and await approval.
                             </small>
                         </div>
                         <div class="d-flex gap-2">
@@ -4605,6 +4623,9 @@ def take_form(form_id):
                 has_access = True
             elif access_info and access_info['request_status'] == 'approved':
                 has_access = True
+            elif form['form_type'] == 'public' and form['department'] == session['department']:
+                # PUBLIC FORMS: Students from same department can access without request
+                has_access = True
             
             if not has_access:
                 connection.close()
@@ -4637,6 +4658,19 @@ def take_form(form_id):
                 questions = []
         except:
             questions = []
+        
+        # Add form type indicator
+        form_type_badge = {
+            'public': 'bg-success',
+            'open': 'bg-info',
+            'confidential': 'bg-purple'
+        }.get(form['form_type'], 'bg-secondary')
+        
+        form_type_text = {
+            'public': 'PUBLIC (No access request needed)',
+            'open': 'OPEN',
+            'confidential': 'CONFIDENTIAL'
+        }.get(form['form_type'], 'UNKNOWN')
         
         questions_html = ''
         for i, q in enumerate(questions):
@@ -4677,8 +4711,13 @@ def take_form(form_id):
         content = f'''
         <div class="card">
             <div class="card-header bg-primary text-white">
-                <h3>{form['title']}</h3>
-                <p>{form['description']}</p>
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h3>{form['title']} {form_type_badge}</h3>
+                        <p>{form['description']}</p>
+                    </div>
+                    {f'<span class="badge student-stats-card"><i class="fas fa-user-graduate"></i> Public Form - No Access Request Needed</span>' if form['form_type'] == 'public' else ''}
+                </div>
                 <small>Department: {form['department']} | Type: {form['form_type'].title()}</small>
             </div>
             <div class="card-body">
@@ -6093,13 +6132,14 @@ def share_form(form_id):
                                             <li><strong>Admins/Super Admins:</strong> Can always access</li>
                                             <li><strong>Teachers:</strong> Only from {form['department']} department</li>
                                             <li><strong>Students:</strong>
-                                                <ul>
-                                                    <li>From {form['department']} department</li>
-                                                    <li>Open forms: Direct access</li>
-                                                    <li>Confidential forms: Need to request access</li>
-                                                    <li>Must not have already submitted</li>
-                                                </ul>
-                                            </li>
+                                            <ul>
+                                                <li>From {form['department']} department</li>
+                                                <li><strong>Public forms:</strong> Direct access without request</li>
+                                                <li><strong>Open forms:</strong> Direct access</li>
+                                                <li><strong>Confidential forms:</strong> Need to request access</li>
+                                                <li>Must not have already submitted</li>
+                                            </ul>
+                                        </li>
                                         </ul>
                                         <div class="alert alert-light">
                                             <i class="fas fa-lightbulb me-2"></i>
@@ -6740,21 +6780,8 @@ def public_form_access(token):
                     </div>
                     ''', get_navbar(), '')
             
-            # For students, check request status
+            # For students, check access
             if session['role'] == 'student':
-                cursor.execute('''
-                    SELECT fr.status as request_status
-                    FROM form_requests fr
-                    WHERE fr.form_id = %s AND fr.student_id = %s
-                ''', (form['id'], session['user_id']))
-                access_info = cursor.fetchone()
-                
-                # Check if already assigned
-                cursor.execute('''
-                    SELECT 1 FROM assignments WHERE form_id = %s AND student_id = %s
-                ''', (form['id'], session['user_id']))
-                assigned = cursor.fetchone()
-                
                 # Check if already submitted
                 cursor.execute('''
                     SELECT 1 FROM responses WHERE form_id = %s AND student_id = %s
@@ -6773,49 +6800,85 @@ def public_form_access(token):
                 
                 # Determine access
                 has_access = False
-                if assigned:
+                
+                # PUBLIC FORMS: Students from same department can access without request
+                if form['form_type'] == 'public' and form['department'] == session['department']:
                     has_access = True
-                elif access_info and access_info['request_status'] == 'approved':
-                    has_access = True
-                elif form['form_type'] == 'open' and form['department'] == session['department']:
-                    # Open forms from same department are accessible
-                    has_access = True
+                else:
+                    # For non-public forms, check request/assignment status
+                    cursor.execute('''
+                        SELECT fr.status as request_status
+                        FROM form_requests fr
+                        WHERE fr.form_id = %s AND fr.student_id = %s
+                    ''', (form['id'], session['user_id']))
+                    access_info = cursor.fetchone()
+                    
+                    # Check if assigned
+                    cursor.execute('''
+                        SELECT 1 FROM assignments WHERE form_id = %s AND student_id = %s
+                    ''', (form['id'], session['user_id']))
+                    assigned = cursor.fetchone()
+                    
+                    if assigned:
+                        has_access = True
+                    elif access_info and access_info['request_status'] == 'approved':
+                        has_access = True
+                    elif form['form_type'] == 'open' and form['department'] == session['department']:
+                        # Open forms from same department are accessible
+                        has_access = True
                 
                 if not has_access:
                     connection.close()
-                    return html_wrapper('Access Required', f'''
-                    <div class="alert alert-danger">
-                        <h4>Access Required</h4>
-                        <p>You need to request access to this form.</p>
-                        <p><strong>Form:</strong> {form['title']}</p>
-                        <p><strong>Department:</strong> {form['department']}</p>
-                        <p><strong>Type:</strong> {form['form_type'].title()}</p>
-                        <div class="mt-3">
-                            <button onclick="requestForm({form['id']})" class="btn btn-primary">
-                                Request Access
-                            </button>
-                            <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
+                    # Different message for public vs other forms
+                    if form['form_type'] == 'public':
+                        return html_wrapper('Access Denied', f'''
+                        <div class="alert alert-danger">
+                            <h4>Access Denied</h4>
+                            <p>This is a PUBLIC form, but you cannot access it because:</p>
+                            <ul>
+                                <li>You are from {session['department']} department</li>
+                                <li>This form is for {form['department']} department</li>
+                            </ul>
+                            <p><strong>Form:</strong> {form['title']}</p>
+                            <div class="mt-3">
+                                <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+                            </div>
                         </div>
-                    </div>
-                    ''', get_navbar(), f'''
-                    <script>
-                        function requestForm(formId) {{
-                            fetch('/request-form/' + formId, {{
-                                method: 'POST',
-                                headers: {{'Content-Type': 'application/json'}}
-                            }})
-                            .then(res => res.json())
-                            .then(data => {{
-                                if (data.success) {{
-                                    alert('Request submitted successfully!');
-                                    window.location.reload();
-                                }} else {{
-                                    alert('Error: ' + data.error);
-                                }}
-                            }});
-                        }}
-                    </script>
-                    ''')
+                        ''', get_navbar(), '')
+                    else:
+                        return html_wrapper('Access Required', f'''
+                        <div class="alert alert-danger">
+                            <h4>Access Required</h4>
+                            <p>You need to request access to this form.</p>
+                            <p><strong>Form:</strong> {form['title']}</p>
+                            <p><strong>Department:</strong> {form['department']}</p>
+                            <p><strong>Type:</strong> {form['form_type'].title()}</p>
+                            <div class="mt-3">
+                                <button onclick="requestForm({form['id']})" class="btn btn-primary">
+                                    Request Access
+                                </button>
+                                <a href="/dashboard" class="btn btn-secondary">Back to Dashboard</a>
+                            </div>
+                        </div>
+                        ''', get_navbar(), f'''
+                        <script>
+                            function requestForm(formId) {{
+                                fetch('/request-form/' + formId, {{
+                                    method: 'POST',
+                                    headers: {{'Content-Type': 'application/json'}}
+                                }})
+                                .then(res => res.json())
+                                .then(data => {{
+                                    if (data.success) {{
+                                        alert('Request submitted successfully!');
+                                        window.location.reload();
+                                    }} else {{
+                                        alert('Error: ' + data.error);
+                                    }}
+                                }});
+                            }}
+                        </script>
+                        ''')
         
         connection.close()
         
@@ -6826,7 +6889,7 @@ def public_form_access(token):
         print(f"Public form access error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', '', '')
-
+        
 @app.route('/notifications')
 @login_required
 def notifications_page():
@@ -8232,6 +8295,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

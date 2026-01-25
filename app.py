@@ -6037,8 +6037,8 @@ def share_form(form_id):
                                     <h5><i class="fas fa-link me-2"></i>Public Share Link</h5>
                                     <div class="input-group mb-3">
                                         <input type="text" class="form-control" id="shareLink" value="{public_link}" readonly>
-                                        <button class="btn btn-outline-primary copy-btn" onclick="copyToClipboard('shareLink')">
-                                            <i class="fas fa-copy"></i> Copy
+                                        <button class="btn btn-primary copy-btn" onclick="copyToClipboard('shareLink')">
+                                            <i class="fas fa-copy"></i> Copy Link
                                         </button>
                                     </div>
                                     
@@ -6204,31 +6204,91 @@ def share_form(form_id):
         
         scripts = f'''
         <script>
-            function copyToClipboard(elementId) {{
-                const copyText = document.getElementById(elementId);
-                copyText.select();
-                copyText.setSelectionRange(0, 99999);
-                navigator.clipboard.writeText(copyText.value).then(() => {{
-                    // Show feedback
-                    const btn = event.target.closest('.copy-btn');
+            function copyToClipboard(elementId) {
+            const copyText = document.getElementById(elementId);
+            
+            // Select the text
+            copyText.select();
+            copyText.setSelectionRange(0, 99999); // For mobile devices
+            
+            try {
+                // Try the modern clipboard API first
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(copyText.value).then(() => {
+                        showCopyFeedback();
+                    }).catch(err => {
+                        // Fallback to old method if modern API fails
+                        useOldCopyMethod(copyText);
+                    });
+                } else {
+                    // Use old method if clipboard API not available
+                    useOldCopyMethod(copyText);
+                }
+            } catch (err) {
+                // Final fallback
+                useOldCopyMethod(copyText);
+            }
+            
+            function useOldCopyMethod(textElement) {
+                // Create a temporary textarea for copying
+                const tempTextArea = document.createElement('textarea');
+                tempTextArea.value = textElement.value;
+                tempTextArea.style.position = 'fixed';
+                tempTextArea.style.left = '-9999px';
+                tempTextArea.style.top = '-9999px';
+                document.body.appendChild(tempTextArea);
+                tempTextArea.select();
+                
+                try {
+                    const successful = document.execCommand('copy');
+                    if (successful) {
+                        showCopyFeedback();
+                    } else {
+                        showToast('Failed to copy. Please copy manually.', 'error');
+                    }
+                } catch (err) {
+                    // Last resort - prompt user to copy manually
+                    promptManualCopy(textElement.value);
+                } finally {
+                    document.body.removeChild(tempTextArea);
+                }
+            }
+            
+            function promptManualCopy(text) {
+                const shouldCopy = confirm(
+                    'Copy to clipboard failed.\n\n' +
+                    'Please copy the link manually:\n\n' +
+                    text + '\n\n' +
+                    'Click OK to select the text.'
+                );
+                
+                if (shouldCopy) {
+                    copyText.select();
+                    copyText.setSelectionRange(0, 99999);
+                    showToast('Text selected. Please copy manually (Ctrl+C or Cmd+C).', 'warning');
+                }
+            }
+            
+            function showCopyFeedback() {
+                // Show feedback
+                const btn = event.target.closest('.copy-btn');
+                if (btn) {
                     const originalHTML = btn.innerHTML;
+                    const originalClass = btn.className;
+                    
                     btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
-                    btn.classList.remove('btn-outline-primary');
-                    btn.classList.add('btn-success');
+                    btn.className = 'btn btn-success copy-btn';
                     
-                    setTimeout(() => {{
+                    setTimeout(() => {
                         btn.innerHTML = originalHTML;
-                        btn.classList.remove('btn-success');
-                        btn.classList.add('btn-outline-primary');
-                    }}, 2000);
-                    
-                    // Show toast notification
-                    showToast('Link copied to clipboard!', 'success');
-                }}).catch(err => {{
-                    console.error('Failed to copy: ', err);
-                    showToast('Failed to copy link', 'error');
-                }});
-            }}
+                        btn.className = originalClass;
+                    }, 2000);
+                }
+                
+                // Show toast notification
+                showToast('Link copied to clipboard!', 'success');
+            }
+        }
             
             function togglePublicLink(formId) {{
                 const isEnabled = document.getElementById('enablePublicLink').checked;
@@ -6388,14 +6448,30 @@ def share_form(form_id):
                 min-width: 120px;
             }}
             
-            .copy-btn {{
-                cursor: pointer;
-                transition: all 0.3s;
-            }}
+            /* Add to the existing CSS */
+            .copy-btn {
+                min-width: 120px;
+                transition: all 0.3s ease;
+            }
             
-            .copy-btn:hover {{
-                transform: scale(1.05);
-            }}
+            .copy-btn:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            }
+            
+            .copy-btn:active {
+                transform: translateY(0);
+            }
+            
+            .copy-btn.btn-success {
+                background: #10b981;
+                border-color: #10b981;
+            }
+            
+            .copy-btn.btn-success:hover {
+                background: #059669;
+                border-color: #059669;
+            }
             
             .public-link-badge {{
                 background: linear-gradient(45deg, #8b5cf6, #7c3aed);
@@ -8295,6 +8371,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

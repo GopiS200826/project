@@ -1040,13 +1040,14 @@ def login():
         session['redirect_after_login'] = redirect_param
     
     # Simple login form (no database queries in GET)
+    # In the login route, update the content variable:
     content = f'''
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Login - Form System</title>
+        <title>Login - FormMaster Pro</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
         <style>
@@ -1054,14 +1055,46 @@ def login():
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 min-height: 100vh;
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                padding-top: 70px;
+                padding-top: 20px;
+            }}
+            .logo-container {{
+                text-align: center;
+                margin-bottom: 30px;
+            }}
+            .logo {{
+                color: white;
+                font-size: 2.5rem;
+                font-weight: 700;
+                margin-bottom: 10px;
+                display: inline-block;
+                padding: 10px 30px;
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(10px);
+                border-radius: 15px;
+                border: 2px solid rgba(255, 255, 255, 0.2);
+            }}
+            .logo i {{
+                color: #ff6b6b;
+                margin-right: 10px;
+            }}
+            .logo-text {{
+                background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }}
+            .tagline {{
+                color: rgba(255, 255, 255, 0.8);
+                font-size: 1.1rem;
+                margin-top: 5px;
             }}
             .login-card {{
                 background: rgba(255, 255, 255, 0.95);
-                border-radius: 15px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                border-radius: 20px;
+                box-shadow: 0 15px 35px rgba(0,0,0,0.2);
                 padding: 40px;
-                margin-top: 50px;
+                margin-top: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
             }}
             .btn-primary {{
                 background: linear-gradient(45deg, #667eea, #764ba2);
@@ -1070,44 +1103,98 @@ def login():
                 border-radius: 50px;
                 font-weight: 600;
                 width: 100%;
+                transition: all 0.3s;
+            }}
+            .btn-primary:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
             }}
             .form-control {{
-                border-radius: 10px;
-                padding: 12px 15px;
+                border-radius: 12px;
+                padding: 15px 20px;
                 border: 2px solid #e2e8f0;
+                transition: all 0.3s;
+            }}
+            .form-control:focus {{
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }}
+            .demo-accounts {{
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 10px;
+                padding: 15px;
+                margin-top: 20px;
+                color: white;
+                font-size: 0.9rem;
+            }}
+            .demo-accounts strong {{
+                color: #ffd166;
             }}
         </style>
     </head>
     <body>
         <div class="container">
+            <!-- Logo Section -->
+            <div class="logo-container">
+                <div class="logo">
+                    <i class="fas fa-poll"></i>
+                    <span class="logo-text">FormMaster Pro</span>
+                </div>
+                <p class="tagline">Smart Forms for Modern Education</p>
+            </div>
+            
             <div class="row justify-content-center">
-                <div class="col-md-4">
+                <div class="col-md-5">
                     <div class="login-card">
-                        <h3 class="text-center mb-4">Login</h3>
+                        <h3 class="text-center mb-4 text-dark">Welcome Back!</h3>
                         <form method="POST" id="loginForm">
                             <div class="mb-3">
-                                <label class="form-label">Email</label>
-                                <input type="email" class="form-control" name="email" required 
-                                       placeholder="your@email.com" autocomplete="email">
+                                <label class="form-label text-dark">Email Address</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light">
+                                        <i class="fas fa-envelope text-muted"></i>
+                                    </span>
+                                    <input type="email" class="form-control" name="email" required 
+                                           placeholder="your@email.com" autocomplete="email">
+                                </div>
                             </div>
                             <div class="mb-3">
-                                <label class="form-label">Password</label>
-                                <input type="password" class="form-control" name="password" required 
-                                       placeholder="••••••••" autocomplete="current-password">
+                                <label class="form-label text-dark">Password</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light">
+                                        <i class="fas fa-lock text-muted"></i>
+                                    </span>
+                                    <input type="password" class="form-control" name="password" required 
+                                           placeholder="••••••••" autocomplete="current-password">
+                                </div>
                             </div>
-                            <button type="submit" class="btn btn-primary" id="loginBtn">
-                                <span id="loginText">Login</span>
+                            <button type="submit" class="btn btn-primary mt-3" id="loginBtn">
+                                <span id="loginText">Sign In</span>
                                 <span id="loginSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
                             </button>
                         </form>
+                        
                         <hr class="my-4">
-                        <p class="text-center">
-                            <a href="/register" class="text-decoration-none">Create new account</a>
+                        
+                        <p class="text-center mb-3">
+                            <span class="text-muted">Don't have an account?</span>
+                            <a href="/register" class="text-decoration-none fw-bold ms-1" style="color: #667eea;">
+                                Sign Up Now
+                            </a>
                         </p>
-                        <div class="text-center text-muted small mt-3">
+                        
+                        <div class="demo-accounts d-none d-md-block">
                             <strong>Demo Accounts:</strong><br>
-                            Admin: {ADMIN_EMAIL}<br>
-                            Super Admin: {SUPER_ADMIN_EMAIL}
+                            <div class="row mt-2">
+                                <div class="col-6">
+                                    <small>Admin: {ADMIN_EMAIL}</small><br>
+                                    <small>Super Admin: {SUPER_ADMIN_EMAIL}</small>
+                                </div>
+                                <div class="col-6">
+                                    <small>Password: admin123</small><br>
+                                    <small>Password: superadmin123</small>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1118,12 +1205,16 @@ def login():
         <script>
             $(document).ready(function() {{
                 $('#loginForm').on('submit', function(e) {{
-                    // Show loading state
                     $('#loginText').addClass('d-none');
                     $('#loginSpinner').removeClass('d-none');
                     $('#loginBtn').prop('disabled', true);
-                    
-                    // Form will submit normally
+                }});
+                
+                // Add focus effects
+                $('.form-control').focus(function() {{
+                    $(this).parent().find('.input-group-text').css('border-color', '#667eea');
+                }}).blur(function() {{
+                    $(this).parent().find('.input-group-text').css('border-color', '#dee2e6');
                 }});
             }});
         </script>
@@ -1251,48 +1342,214 @@ def register():
             return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
     
     departments_options = ''.join([f'<option value="{dept}">{dept}</option>' for dept in DEPARTMENTS])
+    # In the register route, update the content variable:
     content = f'''
-    <div class="row justify-content-center">
-        <div class="col-md-6">
-            <div class="card glass-effect">
-                <div class="card-body">
-                    <h3 class="text-center mb-4">Register</h3>
-                    <form method="POST">
-                        <div class="mb-3">
-                            <label>Full Name</label>
-                            <input type="text" class="form-control" name="name" required>
-                        </div>
-                        <div class="mb-3">
-                            <label>Email</label>
-                            <input type="email" class="form-control" name="email" required>
-                        </div>
-                        <div class="mb-3">
-                            <label>Password</label>
-                            <input type="password" class="form-control" name="password" required>
-                        </div>
-                        <div class="mb-3">
-                            <label>Role</label>
-                            <select class="form-select" name="role">
-                                <option value="student">Student</option>
-                                <option value="teacher">Teacher</option>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label>Department</label>
-                            <select class="form-select" name="department" required>
-                                {departments_options}
-                            </select>
-                        </div>
-                        <button type="submit" class="btn btn-primary w-100">Register</button>
-                    </form>
-                    <hr>
-                    <p class="text-center">
-                        <a href="/login">Already have an account? Login</a>
-                    </p>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Register - FormMaster Pro</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+        <style>
+            body {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                padding-top: 20px;
+            }}
+            .logo-container {{
+                text-align: center;
+                margin-bottom: 30px;
+            }}
+            .logo {{
+                color: white;
+                font-size: 2.5rem;
+                font-weight: 700;
+                margin-bottom: 10px;
+                display: inline-block;
+                padding: 10px 30px;
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(10px);
+                border-radius: 15px;
+                border: 2px solid rgba(255, 255, 255, 0.2);
+            }}
+            .logo i {{
+                color: #ff6b6b;
+                margin-right: 10px;
+            }}
+            .logo-text {{
+                background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }}
+            .tagline {{
+                color: rgba(255, 255, 255, 0.8);
+                font-size: 1.1rem;
+                margin-top: 5px;
+            }}
+            .register-card {{
+                background: rgba(255, 255, 255, 0.95);
+                border-radius: 20px;
+                box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+                padding: 40px;
+                margin-top: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+            }}
+            .btn-success {{
+                background: linear-gradient(45deg, #10b981, #059669);
+                border: none;
+                padding: 12px 25px;
+                border-radius: 50px;
+                font-weight: 600;
+                width: 100%;
+                transition: all 0.3s;
+            }}
+            .btn-success:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(16, 185, 129, 0.4);
+            }}
+            .form-control, .form-select {{
+                border-radius: 12px;
+                padding: 15px 20px;
+                border: 2px solid #e2e8f0;
+                transition: all 0.3s;
+            }}
+            .form-control:focus, .form-select:focus {{
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }}
+            .input-group-text {{
+                background: #f8f9fa;
+                border: 2px solid #e2e8f0;
+                border-right: none;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <!-- Logo Section -->
+            <div class="logo-container">
+                <div class="logo">
+                    <i class="fas fa-poll"></i>
+                    <span class="logo-text">FormMaster Pro</span>
+                </div>
+                <p class="tagline">Smart Forms for Modern Education</p>
+            </div>
+            
+            <div class="row justify-content-center">
+                <div class="col-md-6">
+                    <div class="register-card">
+                        <h3 class="text-center mb-4 text-dark">Create Your Account</h3>
+                        <form method="POST" id="registerForm">
+                            <div class="mb-3">
+                                <label class="form-label text-dark">Full Name</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light">
+                                        <i class="fas fa-user text-muted"></i>
+                                    </span>
+                                    <input type="text" class="form-control" name="name" required 
+                                           placeholder="Enter your full name">
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label text-dark">Email Address</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light">
+                                        <i class="fas fa-envelope text-muted"></i>
+                                    </span>
+                                    <input type="email" class="form-control" name="email" required 
+                                           placeholder="your@email.com">
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label text-dark">Password</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light">
+                                        <i class="fas fa-lock text-muted"></i>
+                                    </span>
+                                    <input type="password" class="form-control" name="password" required 
+                                           placeholder="Create a strong password">
+                                </div>
+                                <small class="text-muted">At least 8 characters with letters and numbers</small>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-dark">Role</label>
+                                    <select class="form-select" name="role">
+                                        <option value="student">Student</option>
+                                        <option value="teacher">Teacher</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-dark">Department</label>
+                                    <select class="form-select" name="department" required>
+                                        <option value="">Select Department</option>
+                                        {' '.join([f'<option value="{dept}">{dept}</option>' for dept in DEPARTMENTS])}
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div class="form-check mb-4">
+                                <input class="form-check-input" type="checkbox" id="terms" required>
+                                <label class="form-check-label text-dark" for="terms">
+                                    I agree to the <a href="#" class="text-decoration-none" style="color: #667eea;">Terms of Service</a> 
+                                    and <a href="#" class="text-decoration-none" style="color: #667eea;">Privacy Policy</a>
+                                </label>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-success" id="registerBtn">
+                                <span id="registerText">Create Account</span>
+                                <span id="registerSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+                            </button>
+                        </form>
+                        
+                        <hr class="my-4">
+                        
+                        <p class="text-center mb-0">
+                            <span class="text-muted">Already have an account?</span>
+                            <a href="/login" class="text-decoration-none fw-bold ms-1" style="color: #667eea;">
+                                Sign In Here
+                            </a>
+                        </p>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
+        
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <script>
+            $(document).ready(function() {{
+                $('#registerForm').on('submit', function(e) {{
+                    if (!$('#terms').is(':checked')) {{
+                        e.preventDefault();
+                        alert('Please agree to the Terms of Service');
+                        return;
+                    }}
+                    $('#registerText').addClass('d-none');
+                    $('#registerSpinner').removeClass('d-none');
+                    $('#registerBtn').prop('disabled', true);
+                }});
+                
+                // Form validation
+                $('input[name="password"]').on('input', function() {{
+                    var password = $(this).val();
+                    var isValid = password.length >= 8 && /[A-Za-z]/.test(password) && /[0-9]/.test(password);
+                    if (password && !isValid) {{
+                        $(this).css('border-color', '#ef4444');
+                    }} else {{
+                        $(this).css('border-color', isValid ? '#10b981' : '#e2e8f0');
+                    }}
+                }});
+            }});
+        </script>
+    </body>
+    </html>
     '''
     return html_wrapper('Register', content, '', '')
 
@@ -7980,6 +8237,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

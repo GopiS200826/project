@@ -45,7 +45,7 @@ SUPER_ADMIN_PASSWORD = 'superadmin123'
 SUPER_ADMIN_NAME = 'Super Administrator'
 
 # Department options
-DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
+DEPARTMENTS = ['IT', 'Data Science', 'AI/ML', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS', 'Others']
 
 # Replace the existing get_db() function with this:
 
@@ -7980,6 +7980,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

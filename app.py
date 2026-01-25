@@ -1920,108 +1920,101 @@ def create_student_form():
             form_type = request.form.get('form_type', 'open')
             reviewer_id = request.form.get('reviewer_id')
             
-            if not title:
-                return html_wrapper('Error', '<div class="alert alert-danger">Title is required</div>', get_navbar(), '')
+            if not title or not reviewer_id:
+                return jsonify({'error': 'Title and reviewer are required'}), 400
             
-            if not reviewer_id:
-                return html_wrapper('Error', '<div class="alert alert-danger">Please select a reviewer</div>', get_navbar(), '')
-            
+            # FAST DATABASE OPERATION
             connection = get_db()
-            with connection.cursor() as cursor:
-                # Get reviewer details
-                cursor.execute('SELECT name, email FROM users WHERE id = %s', (reviewer_id,))
-                reviewer = cursor.fetchone()
-                
-                # Generate share token
-                share_token = generate_share_token()
-                
-                # Create the form as student submission
-                cursor.execute('''
-                    INSERT INTO forms (title, description, created_by, department, form_type, questions, 
-                                      is_student_submission, review_status, reviewed_by, share_token) 
-                    VALUES (%s, %s, %s, %s, %s, %s, TRUE, 'pending', %s, %s)
-                ''', (title, description, session['user_id'], department, form_type, '[]', reviewer_id, share_token))
-                form_id = cursor.lastrowid
-                
-                # Also create entry in student_form_reviews table
-                cursor.execute('''
-                    INSERT INTO student_form_reviews (form_id, student_id, reviewer_id, review_status)
-                    VALUES (%s, %s, %s, 'pending')
-                ''', (form_id, session['user_id'], reviewer_id))
-                
-                connection.commit()
-            connection.close()
+            form_id = None
+            reviewer_email = None
+            reviewer_name = None
             
-            # Create notification for student
-            create_notification(
-                user_id=session['user_id'],
-                title='Student Form Created',
-                message=f'Your form "{title}" has been created and submitted for review.',
-                type='success',
-                link=f'/student-form/{form_id}/edit'
-            )
+            try:
+                with connection.cursor() as cursor:
+                    # Get reviewer info
+                    cursor.execute('SELECT name, email FROM users WHERE id = %s', (reviewer_id,))
+                    reviewer = cursor.fetchone()
+                    if reviewer:
+                        reviewer_email = reviewer['email']
+                        reviewer_name = reviewer['name']
+                    
+                    # Create form
+                    share_token = secrets.token_urlsafe(32)
+                    cursor.execute('''
+                        INSERT INTO forms (title, description, created_by, department, form_type, questions, 
+                                          is_student_submission, review_status, reviewed_by, share_token) 
+                        VALUES (%s, %s, %s, %s, %s, %s, TRUE, 'pending', %s, %s)
+                    ''', (title, description, session['user_id'], department, form_type, '[]', reviewer_id, share_token))
+                    form_id = cursor.lastrowid
+                    
+                    # Create review entry
+                    cursor.execute('''
+                        INSERT INTO student_form_reviews (form_id, student_id, reviewer_id, review_status)
+                        VALUES (%s, %s, %s, 'pending')
+                    ''', (form_id, session['user_id'], reviewer_id))
+                    
+                    connection.commit()
+            finally:
+                connection.close()
             
-            # Create notification for reviewer
-            create_notification(
-                user_id=reviewer_id,
-                title='New Student Form for Review',
-                message=f'A new student form "{title}" has been submitted for your review.',
-                type='warning',
-                link='/review-forms'
-            )
+            # BACKGROUND TASKS
+            def background_tasks():
+                try:
+                    # Student notification
+                    conn = get_db()
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute('''
+                                INSERT INTO notifications (user_id, title, message, type, link) 
+                                VALUES (%s, %s, %s, %s, %s)
+                            ''', (session['user_id'], 'Student Form Created',
+                                  f'Your form "{title}" is pending review.', 
+                                  'success', f'/student-form/{form_id}/edit'))
+                            
+                            # Reviewer notification
+                            cursor.execute('''
+                                INSERT INTO notifications (user_id, title, message, type, link) 
+                                VALUES (%s, %s, %s, %s, %s)
+                            ''', (reviewer_id, 'New Student Form for Review',
+                                  f'A student form "{title}" needs your review.', 
+                                  'warning', '/review-forms'))
+                            
+                            conn.commit()
+                    finally:
+                        conn.close()
+                    
+                    # Emails in background
+                    if ENABLE_EMAIL_NOTIFICATIONS:
+                        # Email to student (simplified)
+                        student_html = f'''
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                            <h2>Student Form Created</h2>
+                            <p>Your form "{title}" is pending review by {reviewer_name}.</p>
+                        </div>
+                        '''
+                        send_email_async(session['email'], 'Student Form Created', student_html)
+                        
+                        # Email to reviewer (simplified)
+                        if reviewer_email:
+                            reviewer_html = f'''
+                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                                <h2>New Student Form for Review</h2>
+                                <p>Student {session["name"]} submitted form "{title}".</p>
+                            </div>
+                            '''
+                            send_email_async(reviewer_email, 'New Student Form for Review', reviewer_html)
+                            
+                except Exception as e:
+                    print(f"Student form background error: {e}")
             
-            # Send form creation email to student
-            if ENABLE_EMAIL_NOTIFICATIONS:
-                html_content = f'''
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #667eea;">Student Form Created</h2>
-                    <p>Hello {session['name']},</p>
-                    <p>You have successfully created a new student form for review.</p>
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                        <p><strong>Form Details:</strong></p>
-                        <p>Title: {title}</p>
-                        <p>Description: {description or 'No description'}</p>
-                        <p>Department: {department}</p>
-                        <p>Type: {form_type.title()}</p>
-                        <p>Reviewer: {reviewer['name']} ({reviewer['email']})</p>
-                        <p>Status: Pending Review</p>
-                    </div>
-                    <p>Your form has been submitted for review. The reviewer will notify you once it's approved.</p>
-                    <a href="http://localhost:5000/student-form/{form_id}/edit" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Edit Form</a>
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
-                </div>
-                '''
-                send_email(session['email'], 'Student Form Created - FormMaster Pro', html_content)
-                
-                # Send notification email to reviewer
-                html_content_reviewer = f'''
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #667eea;">New Student Form for Review</h2>
-                    <p>Hello {reviewer['name']},</p>
-                    <p>A student has submitted a new form for your review.</p>
-                    <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                        <p><strong>Form Details:</strong></p>
-                        <p>Title: {title}</p>
-                        <p>Description: {description or 'No description'}</p>
-                        <p>Department: {department}</p>
-                        <p>Type: {form_type.title()}</p>
-                        <p>Student: {session['name']} ({session['email']})</p>
-                        <p>Status: Pending Review</p>
-                    </div>
-                    <p>Please review this form and approve or reject it.</p>
-                    <a href="http://localhost:5000/review-forms" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Review Forms</a>
-                    <hr>
-                    <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
-                </div>
-                '''
-                send_email(reviewer['email'], 'New Student Form for Review - FormMaster Pro', html_content_reviewer)
+            # Start background thread
+            threading.Thread(target=background_tasks, daemon=True).start()
             
+            # REDIRECT IMMEDIATELY
             return redirect(f'/student-form/{form_id}/edit')
             
         except Exception as e:
             print(f"Create student form error: {e}")
-            traceback.print_exc()
             return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
     
     # Get available teachers for review
@@ -7932,6 +7925,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

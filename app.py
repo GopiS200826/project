@@ -1051,145 +1051,459 @@ def login():
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
         <style>
+            @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap');
+            
             body {{
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 min-height: 100vh;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                padding-top: 20px;
+                font-family: 'Poppins', sans-serif;
+                margin: 0;
+                padding: 0;
             }}
-            .logo-container {{
+            
+            .logo-animated {{
                 text-align: center;
-                margin-bottom: 30px;
+                margin: 40px auto 30px;
+                perspective: 1000px;
             }}
-            .logo {{
+            
+            .logo-circle {{
+                width: 100px;
+                height: 100px;
+                background: linear-gradient(45deg, #ff6b6b, #4ecdc4, #45b7d1);
+                border-radius: 50%;
+                margin: 0 auto 20px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                animation: float 3s ease-in-out infinite;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                position: relative;
+                overflow: hidden;
+            }}
+            
+            .logo-circle::before {{
+                content: '';
+                position: absolute;
+                width: 150%;
+                height: 150%;
+                background: linear-gradient(45deg, transparent, rgba(255,255,255,0.1), transparent);
+                transform: rotate(45deg);
+                animation: shine 3s infinite;
+            }}
+            
+            .logo-icon {{
+                font-size: 48px;
                 color: white;
-                font-size: 2.5rem;
+                z-index: 1;
+                animation: pulse 2s infinite;
+            }}
+            
+            .logo-title {{
+                font-size: 2.8rem;
                 font-weight: 700;
-                margin-bottom: 10px;
-                display: inline-block;
-                padding: 10px 30px;
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(10px);
-                border-radius: 15px;
-                border: 2px solid rgba(255, 255, 255, 0.2);
-            }}
-            .logo i {{
-                color: #ff6b6b;
-                margin-right: 10px;
-            }}
-            .logo-text {{
-                background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+                background: linear-gradient(45deg, #fff, #ffd166);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
+                margin-bottom: 5px;
+                letter-spacing: 1px;
+                text-shadow: 0 2px 4px rgba(0,0,0,0.1);
             }}
-            .tagline {{
-                color: rgba(255, 255, 255, 0.8);
+            
+            .logo-subtitle {{
+                color: rgba(255, 255, 255, 0.9);
                 font-size: 1.1rem;
-                margin-top: 5px;
+                font-weight: 300;
+                letter-spacing: 1px;
             }}
+            
+            @keyframes float {{
+                0%, 100% {{ transform: translateY(0px) rotateY(0deg); }}
+                50% {{ transform: translateY(-10px) rotateY(10deg); }}
+            }}
+            
+            @keyframes shine {{
+                0% {{ transform: translateX(-100%) translateY(-100%) rotate(45deg); }}
+                100% {{ transform: translateX(100%) translateY(100%) rotate(45deg); }}
+            }}
+            
+            @keyframes pulse {{
+                0%, 100% {{ transform: scale(1); opacity: 1; }}
+                50% {{ transform: scale(1.05); opacity: 0.9; }}
+            }}
+            
             .login-card {{
-                background: rgba(255, 255, 255, 0.95);
-                border-radius: 20px;
-                box-shadow: 0 15px 35px rgba(0,0,0,0.2);
-                padding: 40px;
-                margin-top: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
+                background: rgba(255, 255, 255, 0.98);
+                backdrop-filter: blur(10px);
+                border-radius: 25px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+                padding: 40px 35px;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                transform: translateY(0);
+                transition: transform 0.3s ease;
             }}
-            .btn-primary {{
+            
+            .login-card:hover {{
+                transform: translateY(-5px);
+                box-shadow: 0 25px 50px rgba(0,0,0,0.2);
+            }}
+            
+            /* BLACK TEXT FORM STYLES */
+            .form-label {{
+                color: #000000 !important;
+                font-weight: 600;
+                font-size: 0.95rem;
+                margin-bottom: 10px;
+                display: block;
+            }}
+            
+            .form-control {{
+                color: #000000 !important;
+                background-color: #ffffff !important;
+                border-radius: 12px;
+                padding: 14px 18px;
+                border: 2px solid #d1d5db;
+                transition: all 0.3s ease;
+                font-size: 1rem;
+                font-family: 'Poppins', sans-serif;
+                height: 52px;
+            }}
+            
+            .form-control::placeholder {{
+                color: #6b7280 !important;
+                opacity: 0.8;
+                font-weight: 400;
+            }}
+            
+            .form-control:focus {{
+                color: #000000 !important;
+                background-color: #ffffff !important;
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+                outline: none;
+                transform: translateY(-1px);
+            }}
+            
+            .input-group {{
+                margin-bottom: 5px;
+            }}
+            
+            .input-group-text {{
+                background-color: #f8f9fa !important;
+                border: 2px solid #d1d5db;
+                border-right: none;
+                color: #4b5563 !important;
+                padding: 0 18px;
+                font-size: 1.1rem;
+                border-radius: 12px 0 0 12px;
+            }}
+            
+            .input-group .form-control {{
+                border-left: none;
+                border-radius: 0 12px 12px 0;
+            }}
+            
+            .input-group .form-control:focus + .input-group-text {{
+                border-color: #667eea;
+                color: #667eea !important;
+                background-color: #f0f4ff !important;
+            }}
+            
+            /* Form headings */
+            .form-heading {{
+                color: #000000 !important;
+                font-weight: 700;
+                margin-bottom: 30px;
+                font-size: 1.8rem;
+                text-align: center;
+            }}
+            
+            /* Button styles */
+            .btn-login {{
                 background: linear-gradient(45deg, #667eea, #764ba2);
                 border: none;
-                padding: 12px 25px;
+                padding: 16px 25px;
                 border-radius: 50px;
                 font-weight: 600;
                 width: 100%;
-                transition: all 0.3s;
+                transition: all 0.3s ease;
+                color: white !important;
+                font-size: 1.05rem;
+                margin-top: 10px;
+                letter-spacing: 0.5px;
+                font-family: 'Poppins', sans-serif;
             }}
-            .btn-primary:hover {{
+            
+            .btn-login:hover {{
                 transform: translateY(-2px);
-                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+                box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+                color: white !important;
             }}
-            .form-control {{
-                border-radius: 12px;
-                padding: 15px 20px;
-                border: 2px solid #e2e8f0;
-                transition: all 0.3s;
+            
+            .btn-login:active {{
+                transform: translateY(0);
             }}
-            .form-control:focus {{
-                border-color: #667eea;
-                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            
+            /* Links */
+            .form-link {{
+                color: #667eea !important;
+                text-decoration: none;
+                font-weight: 600;
+                transition: all 0.3s ease;
             }}
+            
+            .form-link:hover {{
+                color: #764ba2 !important;
+                text-decoration: underline;
+            }}
+            
+            /* Demo accounts box */
             .demo-accounts {{
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 10px;
-                padding: 15px;
-                margin-top: 20px;
-                color: white;
+                background: rgba(255, 255, 255, 0.9);
+                border-radius: 12px;
+                padding: 18px;
+                margin-top: 25px;
+                color: #000000 !important;
                 font-size: 0.9rem;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.05);
             }}
+            
             .demo-accounts strong {{
-                color: #ffd166;
+                color: #000000 !important;
+                font-size: 1rem;
+                margin-bottom: 10px;
+                display: block;
+            }}
+            
+            .demo-accounts small {{
+                color: #374151 !important;
+                line-height: 1.6;
+            }}
+            
+            /* Divider */
+            .divider {{
+                color: #6b7280 !important;
+                font-size: 0.9rem;
+                font-weight: 400;
+            }}
+            
+            hr {{
+                border-color: rgba(0, 0, 0, 0.1);
+                margin: 25px 0;
+            }}
+            
+            /* Helper text */
+            .form-text {{
+                color: #6b7280 !important;
+                font-size: 0.85rem;
+                margin-top: 8px;
+                font-weight: 400;
+            }}
+            
+            /* Required field asterisk */
+            .required::after {{
+                content: " *";
+                color: #ef4444;
+                font-weight: bold;
+            }}
+            
+            /* Loading spinner */
+            #loginSpinner {{
+                width: 1.2rem;
+                height: 1.2rem;
+                border-width: 0.15em;
+            }}
+            
+            /* Responsive adjustments */
+            @media (max-width: 768px) {{
+                .logo-title {{
+                    font-size: 2.2rem;
+                }}
+                
+                .logo-subtitle {{
+                    font-size: 1rem;
+                }}
+                
+                .login-card {{
+                    padding: 30px 25px;
+                    margin: 0 10px;
+                }}
+                
+                .logo-circle {{
+                    width: 85px;
+                    height: 85px;
+                }}
+                
+                .logo-icon {{
+                    font-size: 40px;
+                }}
+            }}
+            
+            @media (max-width: 576px) {{
+                .logo-title {{
+                    font-size: 1.8rem;
+                }}
+                
+                .logo-circle {{
+                    width: 70px;
+                    height: 70px;
+                }}
+                
+                .logo-icon {{
+                    font-size: 32px;
+                }}
+                
+                .form-heading {{
+                    font-size: 1.5rem;
+                }}
+            }}
+            
+            /* Dark mode support */
+            @media (prefers-color-scheme: dark) {{
+                .login-card {{
+                    background: rgba(30, 30, 30, 0.95);
+                }}
+                
+                .form-control {{
+                    background-color: #1f2937 !important;
+                    border-color: #4b5563;
+                    color: #ffffff !important;
+                }}
+                
+                .form-control::placeholder {{
+                    color: #9ca3af !important;
+                }}
+                
+                .form-label, .form-heading {{
+                    color: #ffffff !important;
+                }}
+                
+                .demo-accounts {{
+                    background: rgba(40, 40, 40, 0.9);
+                    color: #ffffff !important;
+                    border-color: rgba(255, 255, 255, 0.1);
+                }}
+                
+                .demo-accounts strong, .demo-accounts small {{
+                    color: #ffffff !important;
+                }}
+                
+                .form-text {{
+                    color: #9ca3af !important;
+                }}
+                
+                .input-group-text {{
+                    background-color: #374151 !important;
+                    border-color: #4b5563;
+                    color: #d1d5db !important;
+                }}
+            }}
+            
+            /* Custom focus styles for better accessibility */
+            .form-control:focus-visible {{
+                outline: 2px solid #667eea;
+                outline-offset: 2px;
+            }}
+            
+            /* Password toggle visibility */
+            .password-toggle {{
+                cursor: pointer;
+                background: transparent;
+                border: none;
+                color: #6b7280;
+                padding: 0 15px;
+            }}
+            
+            .password-toggle:hover {{
+                color: #667eea;
             }}
         </style>
     </head>
     <body>
         <div class="container">
-            <!-- Logo Section -->
-            <div class="logo-container">
-                <div class="logo">
-                    <i class="fas fa-poll"></i>
-                    <span class="logo-text">FormMaster Pro</span>
+            <!-- Animated Logo -->
+            <div class="logo-animated">
+                <div class="logo-circle">
+                    <i class="fas fa-poll logo-icon"></i>
                 </div>
-                <p class="tagline">Smart Forms for Modern Education</p>
+                <h1 class="logo-title">FormMaster Pro</h1>
+                <p class="logo-subtitle">Smart Forms for Modern Education</p>
             </div>
             
+            <!-- Login Form -->
             <div class="row justify-content-center">
-                <div class="col-md-5">
+                <div class="col-md-5 col-lg-4">
                     <div class="login-card">
-                        <h3 class="text-center mb-4 text-dark">Welcome Back!</h3>
-                        <form method="POST" id="loginForm">
-                            <div class="mb-3">
-                                <label class="form-label text-dark">Email Address</label>
+                        <h3 class="form-heading">Welcome Back!</h3>
+                        
+                        <form method="POST" id="loginForm" novalidate>
+                            <div class="mb-4">
+                                <label class="form-label required">Email Address</label>
                                 <div class="input-group">
-                                    <span class="input-group-text bg-light">
-                                        <i class="fas fa-envelope text-muted"></i>
+                                    <span class="input-group-text">
+                                        <i class="fas fa-envelope"></i>
                                     </span>
                                     <input type="email" class="form-control" name="email" required 
-                                           placeholder="your@email.com" autocomplete="email">
+                                           placeholder="your@email.com" autocomplete="email"
+                                           id="emailInput">
                                 </div>
+                                <div class="form-text">Enter your registered email address</div>
                             </div>
-                            <div class="mb-3">
-                                <label class="form-label text-dark">Password</label>
+                            
+                            <div class="mb-4">
+                                <label class="form-label required">Password</label>
                                 <div class="input-group">
-                                    <span class="input-group-text bg-light">
-                                        <i class="fas fa-lock text-muted"></i>
+                                    <span class="input-group-text">
+                                        <i class="fas fa-lock"></i>
                                     </span>
                                     <input type="password" class="form-control" name="password" required 
-                                           placeholder="••••••••" autocomplete="current-password">
+                                           placeholder="••••••••" autocomplete="current-password"
+                                           id="passwordInput">
+                                    <button type="button" class="password-toggle" id="passwordToggle">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
                                 </div>
+                                <div class="form-text">Enter your account password</div>
                             </div>
-                            <button type="submit" class="btn btn-primary mt-3" id="loginBtn">
+                            
+                            <button type="submit" class="btn btn-login" id="loginBtn">
                                 <span id="loginText">Sign In</span>
                                 <span id="loginSpinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
                             </button>
+                            
+                            <div class="text-center mt-3">
+                                <a href="#" class="form-link">Forgot Password?</a>
+                            </div>
                         </form>
                         
-                        <hr class="my-4">
+                        <hr>
                         
                         <p class="text-center mb-3">
-                            <span class="text-muted">Don't have an account?</span>
-                            <a href="/register" class="text-decoration-none fw-bold ms-1" style="color: #667eea;">
+                            <span class="divider">Don't have an account?</span>
+                            <a href="/register" class="form-link ms-1">
                                 Sign Up Now
                             </a>
                         </p>
                         
-                        <div class="demo-accounts d-none d-md-block">
-                            <strong>Demo Accounts:</strong><br>
-                            <div class="row mt-3">
-                                
-                                    <small>Admin: {ADMIN_EMAIL}</small><br>
-                                    <small>Super Admin: {SUPER_ADMIN_EMAIL}</small>
-                                
+                        <div class="demo-accounts">
+                            <strong>Demo Accounts:</strong>
+                            <div class="row mt-2">
+                                <div class="col-6">
+                                    <small><strong>Admin:</strong><br>{ADMIN_EMAIL}</small>
+                                </div>
+                                <div class="col-6">
+                                    <small><strong>Password:</strong><br>admin123</small>
+                                </div>
+                            </div>
+                            <div class="row mt-2">
+                                <div class="col-6">
+                                    <small><strong>Super Admin:</strong><br>{SUPER_ADMIN_EMAIL}</small>
+                                </div>
+                                <div class="col-6">
+                                    <small><strong>Password:</strong><br>superadmin123</small>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1200,17 +1514,109 @@ def login():
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
         <script>
             $(document).ready(function() {{
+                // Password toggle visibility
+                $('#passwordToggle').click(function() {{
+                    const passwordInput = $('#passwordInput');
+                    const icon = $(this).find('i');
+                    
+                    if (passwordInput.attr('type') === 'password') {{
+                        passwordInput.attr('type', 'text');
+                        icon.removeClass('fa-eye').addClass('fa-eye-slash');
+                    }} else {{
+                        passwordInput.attr('type', 'password');
+                        icon.removeClass('fa-eye-slash').addClass('fa-eye');
+                    }}
+                }});
+                
+                // Form submission
                 $('#loginForm').on('submit', function(e) {{
+                    e.preventDefault();
+                    
+                    // Basic validation
+                    const email = $('#emailInput').val().trim();
+                    const password = $('#passwordInput').val().trim();
+                    
+                    if (!email || !password) {{
+                        alert('Please fill in all required fields');
+                        return;
+                    }}
+                    
+                    if (!isValidEmail(email)) {{
+                        alert('Please enter a valid email address');
+                        return;
+                    }}
+                    
+                    // Show loading state
                     $('#loginText').addClass('d-none');
                     $('#loginSpinner').removeClass('d-none');
                     $('#loginBtn').prop('disabled', true);
+                    
+                    // Submit form after validation
+                    setTimeout(() => {{
+                        this.submit();
+                    }}, 500);
+                }});
+                
+                // Email validation function
+                function isValidEmail(email) {{
+                    const re = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
+                    return re.test(email);
+                }}
+                
+                // Real-time email validation
+                $('#emailInput').on('blur', function() {{
+                    const email = $(this).val().trim();
+                    if (email && !isValidEmail(email)) {{
+                        $(this).addClass('is-invalid');
+                        $(this).parent().find('.input-group-text').css({{
+                            'border-color': '#ef4444',
+                            'color': '#ef4444'
+                        }});
+                    }} else {{
+                        $(this).removeClass('is-invalid');
+                        $(this).parent().find('.input-group-text').css({{
+                            'border-color': '#d1d5db',
+                            'color': '#4b5563'
+                        }});
+                    }}
                 }});
                 
                 // Add focus effects
                 $('.form-control').focus(function() {{
-                    $(this).parent().find('.input-group-text').css('border-color', '#667eea');
+                    $(this).parent().find('.input-group-text').css({{
+                        'border-color': '#667eea',
+                        'color': '#667eea',
+                        'background-color': '#f0f4ff'
+                    }});
                 }}).blur(function() {{
-                    $(this).parent().find('.input-group-text').css('border-color', '#dee2e6');
+                    if (!$(this).hasClass('is-invalid')) {{
+                        $(this).parent().find('.input-group-text').css({{
+                            'border-color': '#d1d5db',
+                            'color': '#4b5563',
+                            'background-color': '#f8f9fa'
+                        }});
+                    }}
+                }});
+                
+                // Add animation to form on load
+                $('.login-card').css({{
+                    'opacity': '0',
+                    'transform': 'translateY(20px)'
+                }}).animate({{
+                    'opacity': '1',
+                    'transform': 'translateY(0)'
+                }}, 600);
+                
+                // Auto-focus email field
+                setTimeout(() => {{
+                    $('#emailInput').focus();
+                }}, 800);
+                
+                // Enter key to submit
+                $('.form-control').keypress(function(e) {{
+                    if (e.which === 13) {{
+                        $('#loginForm').submit();
+                    }}
                 }});
             }});
         </script>
@@ -8233,6 +8639,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

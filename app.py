@@ -19,9 +19,9 @@ app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-in-production'
 
 # Database Configuration
-MYSQL_HOST = 'mysql--bgr.railway.internal'
+MYSQL_HOST = 'mysql-vdry.railway.internal'
 MYSQL_USER = 'root'
-MYSQL_PASSWORD = 'obqlFmxezajMwLfOusStXlHkPHtzQQGL'
+MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
 MYSQL_DB = 'railway'
 
 # Email Configuration
@@ -8295,6 +8295,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

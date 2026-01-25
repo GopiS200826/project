@@ -59,7 +59,45 @@ def get_db():
         cursorclass=pymysql.cursors.DictCursor
     )
     return connection
+# Add at the top with other imports
+import threading
+from queue import Queue
+import atexit
 
+# Create a background task queue
+email_queue = Queue()
+
+def email_worker():
+    """Background worker for sending emails"""
+    while True:
+        try:
+            task = email_queue.get()
+            if task is None:  # Exit signal
+                break
+            to_email, subject, html_content = task
+            send_email(to_email, subject, html_content)
+            email_queue.task_done()
+        except Exception as e:
+            print(f"Error in email worker: {e}")
+
+# Start email worker thread
+email_thread = threading.Thread(target=email_worker, daemon=True)
+email_thread.start()
+
+# Update the send_email function to use queue
+def send_email_async(to_email, subject, html_content):
+    """Send email asynchronously"""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        return True
+    
+    # Add email to background queue
+    try:
+        email_queue.put((to_email, subject, html_content))
+        return True
+    except Exception as e:
+        print(f"Error queueing email: {e}")
+        return False
+        
 # Email sending function
 def send_email(to_email, subject, html_content):
     if not ENABLE_EMAIL_NOTIFICATIONS:
@@ -7746,40 +7784,41 @@ def export_system_data():
         print(f"Export data error: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
+# Update logout route
 @app.route('/logout')
 def logout():
-    """Logout user"""
-    # Create logout notification
+    """Logout user - Fast version"""
+    # Create notification in background
     if 'user_id' in session:
-        create_notification(
-            user_id=session['user_id'],
-            title='Logged Out',
-            message='You have been logged out of the system.',
-            type='info'
-        )
+        # This can also be async
+        threading.Thread(
+            target=create_notification,
+            args=(session['user_id'], 'Logged Out', 'You have been logged out of the system.', 'info'),
+            daemon=True
+        ).start()
     
-    # Send logout email notification
-    if ENABLE_EMAIL_NOTIFICATIONS and 'email' in session:
+    # Send logout email in background if needed
+    if ENABLE_EMAIL_NOTIFICATIONS and 'email' in session and 'name' in session:
         html_content = f'''
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #667eea;">Logout Alert</h2>
-            <p>Hello {session.get('name', 'User')},</p>
+            <p>Hello {session['name']},</p>
             <p>You have been logged out of FormMaster Pro.</p>
             <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
                 <p><strong>Logout Details:</strong></p>
-                <p>User: {session.get('name', 'N/A')}</p>
-                <p>Email: {session.get('email', 'N/A')}</p>
+                <p>User: {session['name']}</p>
+                <p>Email: {session['email']}</p>
                 <p>Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                <p>IP Address: {request.remote_addr}</p>
             </div>
             <p>If this wasn't you, please contact the system administrator immediately.</p>
             <hr>
             <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
         </div>
         '''
-        send_email(session['email'], 'Logout Alert - FormMaster Pro', html_content)
+        # Send email asynchronously
+        send_email_async(session['email'], 'Logout Alert - FormMaster Pro', html_content)
     
-    # Clear session
+    # Clear session immediately
     session.clear()
     return redirect('/login')
 
@@ -7831,3 +7870,4 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+

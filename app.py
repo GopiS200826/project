@@ -14,11 +14,6 @@ import time
 from decimal import Decimal
 import secrets
 
-from database_manager import db_manager, cache
-from cache_manager import CacheKeys
-from template_helpers import template_helpers
-from query_optimizer import query_optimizer
-from async_tasks import async_manager
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-in-production'
@@ -54,8 +49,16 @@ DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHE
 
 # Database connection function - ADDED THIS MISSING FUNCTION
 def get_db():
-    """Get database connection from pool"""
-    return db_manager.get_connection()
+    """Get database connection"""
+    connection = pymysql.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DB,
+        charset='utf8mb4',
+        cursorclass=pymysql.cursors.DictCursor
+    )
+    return connection
 
 # Email sending function
 def send_email(to_email, subject, html_content):
@@ -7828,4 +7831,3 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
-

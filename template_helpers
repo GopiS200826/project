@@ -1,0 +1,73 @@
+import json
+from functools import lru_cache
+
+class TemplateHelpers:
+    @staticmethod
+    @lru_cache(maxsize=100)
+    def departments_options(selected="", include_all=False):
+        """Cached department options HTML"""
+        DEPARTMENTS = ['IT', 'CS', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS']
+        
+        options = []
+        if include_all:
+            options.append('<option value="">All Departments</option>')
+        
+        for dept in DEPARTMENTS:
+            selected_attr = 'selected' if dept == selected else ''
+            options.append(f'<option value="{dept}" {selected_attr}>{dept}</option>')
+        
+        return ''.join(options)
+    
+    @staticmethod
+    def get_time_ago(timestamp):
+        """Fast time ago calculation"""
+        from datetime import datetime
+        now = datetime.now()
+        diff = now - timestamp
+        
+        if diff.days > 365:
+            years = diff.days // 365
+            return f"{years} year{'s' if years > 1 else ''} ago"
+        elif diff.days > 30:
+            months = diff.days // 30
+            return f"{months} month{'s' if months > 1 else ''} ago"
+        elif diff.days > 0:
+            return f"{diff.days} day{'s' if diff.days > 1 else ''} ago"
+        elif diff.seconds > 3600:
+            hours = diff.seconds // 3600
+            return f"{hours} hour{'s' if hours > 1 else ''} ago"
+        elif diff.seconds > 60:
+            minutes = diff.seconds // 60
+            return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+        else:
+            return "Just now"
+    
+    @staticmethod
+    def parse_questions(questions_json):
+        """Fast JSON parsing for questions"""
+        if not questions_json:
+            return []
+        
+        if isinstance(questions_json, str):
+            try:
+                return json.loads(questions_json)
+            except:
+                return []
+        elif isinstance(questions_json, list):
+            return questions_json
+        elif isinstance(questions_json, dict):
+            return [questions_json]
+        return []
+    
+    @staticmethod
+    def format_score_badge(percentage):
+        """Get CSS class for score badge"""
+        if percentage >= 70:
+            return "bg-success", "text-success"
+        elif percentage >= 50:
+            return "bg-warning", "text-warning"
+        else:
+            return "bg-danger", "text-danger"
+
+# Global template helper instance
+template_helpers = TemplateHelpers()

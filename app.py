@@ -1186,15 +1186,9 @@ def login():
                         
                         <div class="demo-accounts d-none d-md-block">
                             <strong>Demo Accounts:</strong><br>
-                            <div class="row mt-2">
-                                <div class="col-6">
+                            <div class="text-dark">
                                     <small>Admin: {ADMIN_EMAIL}</small><br>
                                     <small>Super Admin: {SUPER_ADMIN_EMAIL}</small>
-                                </div>
-                                <div class="col-6">
-                                    <small>Password: admin123</small><br>
-                                    <small>Password: superadmin123</small>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -8238,6 +8232,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

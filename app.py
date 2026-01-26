@@ -26,8 +26,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 import io
-from dotenv import load_dotenv
-
 
 # Create Flask app ONCE
 app = Flask(__name__)
@@ -38,90 +36,29 @@ OTP_EXPIRY_MINUTES = 10
 OTP_LENGTH = 6
 
 # Database Configuration
-#MYSQL_HOST = 'mysql-vdry.railway.internal'
-#MYSQL_USER = 'root'
-#MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
-#MYSQL_DB = 'railway'
-
-
-load_dotenv()
-
-# ========== SECURE CONFIGURATION =========
-try:
-    # Try to load from secure config file
-    from secure_config import secure_config
-    
-    config = secure_config.load_config()
-    
-    if config:
-        # Use values from encrypted config
-        MYSQL_HOST = config.get('MYSQL_HOST', 'mysql-vdry.railway.internal')
-        MYSQL_USER = config.get('MYSQL_USER', 'root')
-        MYSQL_PASSWORD = config.get('MYSQL_PASSWORD', 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs')
-        MYSQL_DB = config.get('MYSQL_DB', 'railway')
-        ADMIN_PASSWORD = config.get('ADMIN_PASSWORD', 'admin123')
-        SUPER_ADMIN_PASSWORD = config.get('SUPER_ADMIN_PASSWORD', 'superadmin123')
-        app.secret_key = config.get('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
-        
-      
-        
-        print("✅ Loaded configuration from secure file")
-    else:
-        raise ValueError("Config file is empty")
-        
-except (ImportError, ValueError) as e:
-    print(f"⚠️  Secure config not available: {e}")
-    print("⚠️  Using fallback configuration")
-    
-    # Fallback to hardcoded values (less secure)
-    MYSQL_HOST = 'mysql-vdry.railway.internal'
-    MYSQL_USER = 'root'
-    MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
-    MYSQL_DB = 'railway'
-    
-    # Get admin passwords from environment or use defaults
-    import os
-    from dotenv import load_dotenv
-    load_dotenv()
-    
-    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')
-    SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', 'superadmin123')
-    
-    # Email config
-    EMAIL_USER = 'gopi200026@gmail.com'
-    EMAIL_PASSWORD = 'laku neok xexr croj'
-    
-    app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
-
-print(f"DEBUG: Database: {MYSQL_DB}")
-print(f"DEBUG: Host: {MYSQL_HOST}")
-
-
-# Validation (optional)
-required_vars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
-for var in required_vars:
-    if not locals().get(var):
-        print(f"Warning: {var} is not set in environment variables")
-
+MYSQL_HOST = 'mysql-vdry.railway.internal'
+MYSQL_USER = 'root'
+MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
+MYSQL_DB = 'railway'
 
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
-EMAIL_USER = 'gopi200026@gmail.com'  # Change this to your email
-EMAIL_PASSWORD = 'nxsg ddfb cvwf iduv'  # Change this to your app password
-EMAIL_FROM = 'gopi200026@gmail.com'  # Change this to your emai
+EMAIL_USER = 'gamergopi26@gmail.com'  # Change this to your email
+EMAIL_PASSWORD = 'laku neok xexr croj'  # Change this to your app password
+EMAIL_FROM = 'gamergopi26@gmail.com'  # Change this to your email
 
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
 
 # Default Admin Credentials
 ADMIN_EMAIL = 'admin@example.com'
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+ADMIN_PASSWORD = 'admin123'
 ADMIN_NAME = 'System Administrator'
 
 # Super Admin Credentials
 SUPER_ADMIN_EMAIL = 'superadmin@example.com'
-SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD')
+SUPER_ADMIN_PASSWORD = 'superadmin123'
 SUPER_ADMIN_NAME = 'Super Administrator'
 
 # Department options
@@ -534,19 +471,17 @@ def init_db():
             cursor.execute(f"USE {MYSQL_DB}")
             
             # Users table - Updated to include super_admin role
-            # In the init_db() function, update the users table creation:
             cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                email VARCHAR(100) UNIQUE NOT NULL,
-                password VARCHAR(255) NOT NULL,
-                name VARCHAR(100) NOT NULL,
-                role ENUM('student', 'teacher', 'admin', 'super_admin') DEFAULT 'student',
-                department VARCHAR(50) DEFAULT 'IT',
-                phone VARCHAR(20),  # ADD THIS LINE
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_email (email),
-                INDEX idx_department (department)
-            )''')
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            email VARCHAR(100) UNIQUE NOT NULL,
+                            password VARCHAR(255) NOT NULL,
+                            name VARCHAR(100) NOT NULL,
+                            role ENUM('student', 'teacher', 'admin', 'super_admin') DEFAULT 'student',
+                            department VARCHAR(50) DEFAULT 'IT',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            INDEX idx_email (email),
+                            INDEX idx_department (department)
+                            )''')
             
             # In the init_db() function, update the forms table creation:
             cursor.execute('''CREATE TABLE IF NOT EXISTS forms (
@@ -983,7 +918,11 @@ app.secret_key = 'your-secret-key-change-in-production'  # Make sure this is set
 OTP_EXPIRY_MINUTES = 10
 OTP_LENGTH = 6
 
-
+# Database Configuration
+MYSQL_HOST = 'localhost'
+MYSQL_USER = 'root'
+MYSQL_PASSWORD = 'root'
+MYSQL_DB = 'form_system_db'
 
 # ... rest of the code continues ...
 
@@ -3084,7 +3023,7 @@ def admin_create_user():
                                 <p>Created By: {session['name']}</p>
                             </div>
                             <p>You can now login to your account.</p>
-                            <a href="https://formmaster.up.railway.app/login" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Login Now</a>
+                            <a href="http://localhost:5000/login" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Login Now</a>
                             <p><strong>Note:</strong> { 'You will need OTP verification for login.' if role in ['student', 'teacher'] else 'Admin accounts can login directly without OTP.'}</p>
                         </div>
                         '''
@@ -4135,12 +4074,7 @@ def dashboard():
                         </span>
                     </p>
                 </div>
-                <div>
-                    <a href="/notifications" class="btn btn-outline-light position-relative me-2">
-                        <i class="fas fa-bell"></i>
-                        {f'<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{get_unread_notification_count(user_id)}</span>' if get_unread_notification_count(user_id) > 0 else ''}
-                    </a>
-                </div>
+                
             </div>
         </div>
 
@@ -4192,44 +4126,69 @@ def dashboard():
             }
             
             function requestDownloadByForm(formId) {
-                // First get the response ID for this form
-                fetch('/api/get-response/' + formId, {
-                    method: 'GET',
+            fetch('/api/get-response/' + formId, {
+                method: 'GET',
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(res => {
+                // First check what type of content we're getting
+                const contentType = res.headers.get('content-type');
+                console.log('Content-Type:', contentType);
+                
+                if (!contentType || !contentType.includes('application/json')) {
+                    // It's not JSON, let's see what it is
+                    return res.text().then(text => {
+                        console.log('Response text:', text.substring(0, 200)); // Log first 200 chars
+                        throw new Error('Server returned non-JSON response: ' + contentType);
+                    });
+                }
+                return res.json();
+            })
+            .then(data => {
+                if (data.success && data.response_id) {
+                    requestDownload(data.response_id);
+                } else {
+                    alert('Error: ' + (data.error || 'No response found for this form'));
+                }
+            })
+            .catch(error => {
+                console.error('Error details:', error);
+                alert('Error: ' + error.message);
+            });
+        }
+
+        function requestDownload(responseId) {
+            if (confirm('Request download permission for this response?')) {
+                fetch('/request-download/' + responseId, {
+                    method: 'POST',
                     headers: {'Content-Type': 'application/json'}
                 })
-                .then(res => res.json())
+                .then(res => {
+                    const contentType = res.headers.get('content-type');
+                    console.log('Content-Type:', contentType);
+                    
+                    if (!contentType || !contentType.includes('application/json')) {
+                        return res.text().then(text => {
+                            console.log('Response text:', text.substring(0, 200));
+                            throw new Error('Server returned non-JSON response: ' + contentType);
+                        });
+                    }
+                    return res.json();
+                })
                 .then(data => {
-                    if (data.success && data.response_id) {
-                        requestDownload(data.response_id);
+                    if (data.success) {
+                        alert(data.message);
+                        window.location.reload();
                     } else {
-                        alert('Error: ' + (data.error || 'No response found for this form'));
+                        alert('Error: ' + data.error);
                     }
                 })
                 .catch(error => {
-                    alert('Network error: ' + error);
+                    console.error('Error details:', error);
+                    alert('Error: ' + error.message);
                 });
             }
-            
-            function requestDownload(responseId) {
-                if (confirm('Request download permission for this response?')) {
-                    fetch('/request-download/' + responseId, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'}
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            alert(data.message);
-                            window.location.reload();
-                        } else {
-                            alert('Error: ' + data.error);
-                        }
-                    })
-                    .catch(error => {
-                        alert('Network error: ' + error);
-                    });
-                }
-            }
+        }
             
             function deleteForm(formId, formTitle) {
                 if (confirm(`Are you sure you want to delete the form "${formTitle}"? This action cannot be undone.`)) {
@@ -5686,14 +5645,11 @@ def settings():
                                             <input type="email" class="form-control" name="email" 
                                                    value="''' + (user['email'] if user else '') + '''" required>
                                         </div>
-                                        # In the settings HTML, change the phone input section to:
-                                        
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Phone Number</label>
                                             <input type="tel" class="form-control" name="phone" 
-                                                value="">
+                                                   value="''' + (user['phone'] if user and user['phone'] else '') + '''">
                                         </div>
-                                        
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Department</label>
                                             <input type="text" class="form-control" name="department" 
@@ -6141,6 +6097,42 @@ def settings():
     
     return settings_html
 
+@app.route('/api/get-response/<int:form_id>', methods=['GET'])
+@login_required
+def get_response_by_form_id(form_id):
+    """Get response ID for a specific form and student"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT r.id as response_id
+                FROM responses r
+                WHERE r.form_id = %s AND r.student_id = %s
+                LIMIT 1
+            ''', (form_id, session['user_id']))
+            response = cursor.fetchone()
+        connection.close()
+        
+        if response:
+            return jsonify({
+                'success': True,
+                'response_id': response['response_id']
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No response found for this form'
+            }), 404
+            
+    except Exception as e:
+        print(f"Error getting response: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+# ======================
+# API ENDPOINTS FOR SETTINGS
+# ======================
 
 @app.route('/api/settings/update-profile', methods=['POST'])
 def update_profile():
@@ -6150,28 +6142,18 @@ def update_profile():
     user_id = session['user_id']
     name = request.form.get('name')
     email = request.form.get('email')
-    phone = request.form.get('phone', '')  # Default to empty string
+    phone = request.form.get('phone')
     department = request.form.get('department')
     
     try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            # Check if phone column exists
-            cursor.execute("SHOW COLUMNS FROM users LIKE 'phone'")
-            phone_exists = cursor.fetchone()
-            
-            if phone_exists:
-                cursor.execute("""
-                    UPDATE users 
-                    SET name = %s, email = %s, phone = %s, department = %s 
-                    WHERE id = %s
-                """, (name, email, phone, department, user_id))
-            else:
-                cursor.execute("""
-                    UPDATE users 
-                    SET name = %s, email = %s, department = %s 
-                    WHERE id = %s
-                """, (name, email, department, user_id))
+        cursor = mysql.connection.cursor()
+        cursor.execute("""
+            UPDATE users 
+            SET name = %s, email = %s, phone = %s, department = %s 
+            WHERE id = %s
+        """, (name, email, phone, department, user_id))
+        mysql.connection.commit()
+        cursor.close()
         
         # Update session data
         session['name'] = name
@@ -6180,7 +6162,6 @@ def update_profile():
         
         return jsonify({'success': True, 'message': 'Profile updated successfully'})
     except Exception as e:
-        print(f"Update profile error: {e}")
         return jsonify({'success': False, 'message': str(e)})
 
 @app.route('/api/settings/change-password', methods=['POST'])
@@ -6197,10 +6178,9 @@ def change_password():
         return jsonify({'success': False, 'message': 'Passwords do not match'})
     
     try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT password FROM users WHERE id = %s", (user_id,))
-            result = cursor.fetchone()
+        cursor = mysql.connection.cursor()
+        cursor.execute("SELECT password FROM users WHERE id = %s", (user_id,))
+        result = cursor.fetchone()
         
         if not result:
             return jsonify({'success': False, 'message': 'User not found'})
@@ -6210,10 +6190,9 @@ def change_password():
             return jsonify({'success': False, 'message': 'Current password is incorrect'})
         
         # Update password
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE users SET password = %s WHERE id = %s", (new_password, user_id))
-            connection.commit()
-        connection.close()
+        cursor.execute("UPDATE users SET password = %s WHERE id = %s", (new_password, user_id))
+        mysql.connection.commit()
+        cursor.close()
         
         return jsonify({'success': True, 'message': 'Password changed successfully'})
     except Exception as e:
@@ -6232,34 +6211,33 @@ def update_notification_preferences():
     weekly_digest = request.form.get('weekly_digest') == 'true'
     
     try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            # Check if table exists, create if not
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS notification_preferences (
-                    user_id INT PRIMARY KEY,
-                    email_notifications BOOLEAN DEFAULT TRUE,
-                    push_notifications BOOLEAN DEFAULT TRUE,
-                    form_updates BOOLEAN DEFAULT TRUE,
-                    deadline_alerts BOOLEAN DEFAULT TRUE,
-                    weekly_digest BOOLEAN DEFAULT FALSE,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            """)
-            
-            cursor.execute("""
-                INSERT INTO notification_preferences 
-                (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                email_notifications = VALUES(email_notifications),
-                push_notifications = VALUES(push_notifications),
-                form_updates = VALUES(form_updates),
-                deadline_alerts = VALUES(deadline_alerts),
-                weekly_digest = VALUES(weekly_digest)
-            """, (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest))
-            connection.commit()
-        connection.close()
+        cursor = mysql.connection.cursor()
+        # Check if table exists, create if not
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                user_id INT PRIMARY KEY,
+                email_notifications BOOLEAN DEFAULT TRUE,
+                push_notifications BOOLEAN DEFAULT TRUE,
+                form_updates BOOLEAN DEFAULT TRUE,
+                deadline_alerts BOOLEAN DEFAULT TRUE,
+                weekly_digest BOOLEAN DEFAULT FALSE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        
+        cursor.execute("""
+            INSERT INTO notification_preferences 
+            (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+            email_notifications = VALUES(email_notifications),
+            push_notifications = VALUES(push_notifications),
+            form_updates = VALUES(form_updates),
+            deadline_alerts = VALUES(deadline_alerts),
+            weekly_digest = VALUES(weekly_digest)
+        """, (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest))
+        mysql.connection.commit()
+        cursor.close()
         
         return jsonify({'success': True, 'message': 'Notification preferences updated'})
     except Exception as e:
@@ -6273,6 +6251,8 @@ def terminate_session():
     session_id = request.form.get('session_id')
     # In a real app, you would invalidate the session token in database
     return jsonify({'success': True, 'message': 'Session terminated'})
+
+
 
 @app.route('/create-form', methods=['GET', 'POST'])
 @login_required
@@ -7020,7 +7000,7 @@ def submit_for_review(form_id):
                     <p>Student: {session['name']} ({session['email']})</p>
                     <p>Submission Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
-                <a href="https://formmaster.up.railway.app/review-forms" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Review Forms</a>
+                <a href="http://localhost:5000/review-forms" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Review Forms</a>
                 <hr>
                 <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
             </div>
@@ -7796,7 +7776,7 @@ def review_form_action(form_id):
                         <p>Approval Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                     </div>
                     <p>Your form is now published and available to other students.</p>
-                    <a href="https://formmaster.up.railway.app/dashboard" style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Dashboard</a>
+                    <a href="http://localhost:5000/dashboard" style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Dashboard</a>
                     <hr>
                     <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
                 </div>
@@ -7818,7 +7798,7 @@ def review_form_action(form_id):
                         <p>Review Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                     </div>
                     <p>You can edit and resubmit your form for review.</p>
-                    <a href="https://formmaster.up.railway.app/my-submissions" style="display: inline-block; padding: 10px 20px; background: #ef4444; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Submissions</a>
+                    <a href="http://localhost:5000/my-submissions" style="display: inline-block; padding: 10px 20px; background: #ef4444; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Submissions</a>
                     <hr>
                     <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
                 </div>
@@ -8263,7 +8243,7 @@ def assign_form(form_id):
                                 <p>Assignment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                             </div>
                             <p>Please complete the form before the due date.</p>
-                            <a href="https://formmaster.up.railway.app/dashboard" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Dashboard</a>
+                            <a href="http://localhost:5000/dashboard" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Dashboard</a>
                             <hr>
                             <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
                         </div>
@@ -8447,7 +8427,7 @@ def request_form(form_id):
                     <p>Request Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
                 <p>Please review and approve or reject this request.</p>
-                <a href="https://formmaster.up.railway.app/form-requests" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Review Requests</a>
+                <a href="http://localhost:5000/form-requests" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Review Requests</a>
                 <hr>
                 <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
             </div>
@@ -8716,7 +8696,7 @@ def handle_request(request_id, action):
                         <p>Approval Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                     </div>
                     <p>You can now access the form from your dashboard.</p>
-                    <a href="https://formmaster.up.railway.app/dashboard" style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Dashboard</a>
+                    <a href="http://localhost:5000/dashboard" style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Dashboard</a>
                     <hr>
                     <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
                 </div>
@@ -9696,7 +9676,7 @@ def handle_download_request(download_id, action):
                             <p>Approval Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                         </div>
                         <p>You can now download your response from your dashboard.</p>
-                        <a href="https://formmaster.up.railway.app/my-responses/downloads" style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Download Now</a>
+                        <a href="http://localhost:5000/my-responses/downloads" style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Download Now</a>
                     </div>
                     '''
                     send_email(download['student_email'], 'Download Access Granted - FormMaster Pro', html_content)
@@ -11702,7 +11682,7 @@ def toggle_form_publish(form_id):
                         <p>Change Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                     </div>
                     <p>{"The form is now visible to students who have access." if new_status else "The form is no longer visible to students."}</p>
-                    <a href="https://formmaster.up.railway.app/form/{form_id}/edit" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Form</a>
+                    <a href="http://localhost:5000/form/{form_id}/edit" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Form</a>
                     <hr>
                     <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
                 </div>
@@ -13480,28 +13460,13 @@ if __name__ == '__main__':
     init_db()
     
     print("Starting FormMaster Pro...")
-    print(f"Admin URL: https://formmaster.up.railway.app/login")
+    print(f"Admin URL: http://localhost:5000/login")
     print(f"Admin Email: {ADMIN_EMAIL}")
     print(f"Admin Password: {ADMIN_PASSWORD}")
     print(f"Super Admin Email: {SUPER_ADMIN_EMAIL}")
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

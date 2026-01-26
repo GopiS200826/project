@@ -105,11 +105,11 @@ for var in required_vars:
 
 
 # Email Configuration
-EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_HOST = 'sandbox.smtp.mailtrap.io'
 EMAIL_PORT = 465
-EMAIL_USER = 'gopi200026@gmail.com'  # Change this to your email
-EMAIL_PASSWORD = 'nxsg ddfb cvwf iduv'  # Change this to your app password
-EMAIL_FROM = 'gopi200026@gmail.com'  # Change this to your ema
+EMAIL_USER = '8d1bc9c8fc7aa2'  # Change this to your email
+EMAIL_PASSWORD = '1271913d63c6ce'  # Change this to your app password
+EMAIL_FROM = 'hello@demomailtrap.co'  # Change this to your ema
 
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
@@ -13482,6 +13482,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

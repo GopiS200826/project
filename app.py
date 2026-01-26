@@ -26,6 +26,8 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 import io
+from dotenv import load_dotenv
+
 
 # Create Flask app ONCE
 app = Flask(__name__)
@@ -42,105 +44,13 @@ OTP_LENGTH = 6
 #MYSQL_DB = 'railway'
 
 
+load_dotenv()
 
-
-# Database Configuration for Railway
-import os
-import pymysql
-import pymysql.cursors
-
-# Get database credentials from environment variables (Railway provides these)
-def get_db_config():
-    """Get database configuration from Railway environment variables"""
-    # Railway's standard MySQL service variables
-    if 'MYSQLHOST' in os.environ:
-        # Using Railway's managed MySQL
-        print("🚀 Using Railway's managed MySQL service")
-        return {
-            'host': os.environ.get('MYSQLHOST'),
-            'user': os.environ.get('MYSQLUSER'),
-            'password': os.environ.get('MYSQLPASSWORD'),
-            'database': os.environ.get('MYSQLDATABASE'),
-            'port': int(os.environ.get('MYSQLPORT', 3306))
-        }
-    else:
-        # Fallback to custom variables
-        print("⚠️ Using custom MySQL configuration")
-        return {
-            'host': os.environ.get('MYSQL_HOST', 'localhost'),
-            'user': os.environ.get('MYSQL_USER', 'root'),
-            'password': os.environ.get('MYSQL_PASSWORD', ''),
-            'database': os.environ.get('MYSQL_DB', 'railway'),
-            'port': int(os.environ.get('MYSQL_PORT', 3306))
-        }
-
-def get_db():
-    """Get database connection using pymysql"""
-    try:
-        config = get_db_config()
-        
-        print(f"🔗 Connecting to: {config['host']}:{config['port']} (DB: {config['database']})")
-        
-        connection = pymysql.connect(
-            host=config['host'],
-            user=config['user'],
-            password=config['password'],
-            database=config['database'],
-            port=config['port'],
-            charset='utf8mb4',
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=False,
-            connect_timeout=10
-        )
-        
-        print(f"✅ Connected to database: {config['database']}")
-        return connection
-        
-    except pymysql.Error as e:
-        print(f"❌ Database connection error: {e}")
-        
-        # Try to create database if it doesn't exist
-        try:
-            print("🔄 Attempting to create database if it doesn't exist...")
-            config = get_db_config()
-            
-            # Connect without database
-            temp_conn = pymysql.connect(
-                host=config['host'],
-                user=config['user'],
-                password=config['password'],
-                port=config['port'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
-            
-            with temp_conn.cursor() as cursor:
-                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {config['database']} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-                cursor.execute(f"USE {config['database']}")
-                temp_conn.commit()
-            
-            temp_conn.close()
-            print(f"✅ Database '{config['database']}' created or already exists")
-            
-            # Try connecting again
-            connection = pymysql.connect(
-                host=config['host'],
-                user=config['user'],
-                password=config['password'],
-                database=config['database'],
-                port=config['port'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor,
-                autocommit=False
-            )
-            
-            print(f"✅ Successfully connected to database: {config['database']}")
-            return connection
-            
-        except Exception as e2:
-            print(f"❌ Failed to create database: {e2}")
-            traceback.print_exc()
-            raise
+# Database Configuration from environment variables
+MYSQL_HOST = os.getenv('MYSQL_HOST')
+MYSQL_USER = os.getenv('MYSQL_USER')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
+MYSQL_DB = os.getenv('MYSQL_DB')
 
 # Validation (optional)
 required_vars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
@@ -565,15 +475,11 @@ def send_email(to_email, subject, html_content):
 
 def init_db():
     try:
-        config = get_db_config()
-        print(f"🔧 Initializing database: {config['database']}")
-        
         # First check if database exists
         connection = pymysql.connect(
-            host=config['host'],
-            user=config['user'],
-            password=config['password'],
-            port=config['port'],
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
             charset='utf8mb4',
             cursorclass=pymysql.cursors.DictCursor
         )
@@ -13536,6 +13442,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

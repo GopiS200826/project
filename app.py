@@ -19,6 +19,13 @@ import threading
 from queue import Queue
 import atexit
 import socket
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+import io
 
 # Create Flask app ONCE
 app = Flask(__name__)
@@ -60,6 +67,72 @@ DEPARTMENTS = ['IT', 'Data Science', 'AI/ML', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MB
 # Email queue for background processing
 email_queue = Queue()
 # Replace the existing get_db() function with this:
+
+# ========== DECORATORS DEFINITION ==========
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated_function
+
+def teacher_required(f):
+    @wraps(f)
+    @login_required
+    def decorated_function(*args, **kwargs):
+        if session.get('role') not in ['teacher', 'admin', 'super_admin']:
+            return '''
+            <script>
+                alert("Teacher access required");
+                window.location.href = "/dashboard";
+            </script>
+            '''
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    @wraps(f)
+    @login_required
+    def decorated_function(*args, **kwargs):
+        if session.get('role') not in ['admin', 'super_admin']:
+            return '''
+            <script>
+                alert("Admin access required");
+                window.location.href = "/dashboard";
+            </script>
+            '''
+        return f(*args, **kwargs)
+    return decorated_function
+
+def student_required(f):
+    @wraps(f)
+    @login_required
+    def decorated_function(*args, **kwargs):
+        if session.get('role') != 'student':
+            return '''
+            <script>
+                alert("Student access required");
+                window.location.href = "/dashboard";
+            </script>
+            '''
+        return f(*args, **kwargs)
+    return decorated_function
+
+def super_admin_required(f):
+    @wraps(f)
+    @login_required
+    def decorated_function(*args, **kwargs):
+        if session.get('role') != 'super_admin':
+            return '''
+            <script>
+                alert("Super Admin access required");
+                window.location.href = "/dashboard";
+            </script>
+            '''
+        return f(*args, **kwargs)
+    return decorated_function
+
 
 import pymysql
 import threading
@@ -140,6 +213,175 @@ def send_email_async(to_email, subject, html_content):
     except Exception as e:
         print(f"Error queueing email: {e}")
         return False
+    
+
+def generate_download_token():
+    """Generate a secure download token"""
+    return secrets.token_urlsafe(32)
+
+def create_response_download_entry(response_id, student_id, form_id):
+    """Create an entry in response_downloads table - FIXED VERSION"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Check if entry already exists
+            cursor.execute('''
+                SELECT id, download_token FROM response_downloads 
+                WHERE response_id = %s AND student_id = %s
+            ''', (response_id, student_id))
+            existing = cursor.fetchone()
+            
+            if existing:
+                connection.close()
+                return existing['download_token'], None
+            
+            # Create new entry
+            download_token = generate_download_token()
+            cursor.execute('''
+                INSERT INTO response_downloads 
+                (response_id, student_id, form_id, download_token)
+                VALUES (%s, %s, %s, %s)
+            ''', (response_id, student_id, form_id, download_token))
+            
+            # Get form details for notification - FIXED QUERY
+            cursor.execute('''
+                SELECT f.title, f.form_type, f.created_by,
+                       u.email as creator_email, u.name as creator_name
+                FROM forms f
+                JOIN users u ON f.created_by = u.id
+                WHERE f.id = %s
+            ''', (form_id,))
+            form_details = cursor.fetchone()
+            
+            connection.commit()
+            connection.close()
+            
+            # Rename 'created_by' to 'creator_id' for consistency
+            if form_details:
+                form_details['creator_id'] = form_details['created_by']
+            
+            return download_token, form_details
+            
+    except Exception as e:
+        print(f"Error creating download entry: {e}")
+        traceback.print_exc()
+        return None, None
+
+def grant_download_access(download_id, granted_by):
+    """Grant download access to a student"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                UPDATE response_downloads 
+                SET access_granted = TRUE, 
+                    granted_by = %s, 
+                    granted_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            ''', (granted_by, download_id))
+            connection.commit()
+            
+            # Get details for notification
+            cursor.execute('''
+                SELECT rd.*, r.student_id, f.title, u.email as student_email, 
+                       u.name as student_name, u2.name as grantor_name
+                FROM response_downloads rd
+                JOIN responses r ON rd.response_id = r.id
+                JOIN forms f ON rd.form_id = f.id
+                JOIN users u ON rd.student_id = u.id
+                JOIN users u2 ON rd.granted_by = u2.id
+                WHERE rd.id = %s
+            ''', (download_id,))
+            details = cursor.fetchone()
+        connection.close()
+        return details
+    except Exception as e:
+        print(f"Error granting download access: {e}")
+        return None
+
+def update_download_count(download_id):
+    """Update download count and timestamp"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                UPDATE response_downloads 
+                SET download_count = download_count + 1,
+                    last_downloaded_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            ''', (download_id,))
+            connection.commit()
+        connection.close()
+        return True
+    except Exception as e:
+        print(f"Error updating download count: {e}")
+        return False
+
+def get_download_permission(response_id, student_id):
+    """Check if student has permission to download response"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT rd.*, f.form_type, f.created_by as form_owner
+                FROM response_downloads rd
+                JOIN forms f ON rd.form_id = f.id
+                WHERE rd.response_id = %s AND rd.student_id = %s
+            ''', (response_id, student_id))
+            permission = cursor.fetchone()
+        connection.close()
+        return permission
+    except Exception as e:
+        print(f"Error getting download permission: {e}")
+        return None
+
+def get_pending_download_requests(form_owner_id=None, form_id=None):
+    """Get pending download requests"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            if form_id:
+                cursor.execute('''
+                    SELECT rd.*, r.student_id, u.name as student_name, 
+                           u.email as student_email, f.title as form_title,
+                           r.score, r.percentage, r.submitted_at
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON rd.form_id = f.id
+                    JOIN users u ON rd.student_id = u.id
+                    WHERE rd.form_id = %s AND rd.access_granted = FALSE
+                    ORDER BY rd.created_at DESC
+                ''', (form_id,))
+            elif form_owner_id:
+                cursor.execute('''
+                    SELECT rd.*, r.student_id, u.name as student_name, 
+                           u.email as student_email, f.title as form_title,
+                           r.score, r.percentage, r.submitted_at
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON rd.form_id = f.id
+                    JOIN users u ON rd.student_id = u.id
+                    WHERE f.created_by = %s AND rd.access_granted = FALSE
+                    ORDER BY rd.created_at DESC
+                ''', (form_owner_id,))
+            else:
+                cursor.execute('''
+                    SELECT rd.*, r.student_id, u.name as student_name, 
+                           u.email as student_email, f.title as form_title,
+                           r.score, r.percentage, r.submitted_at
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON rd.form_id = f.id
+                    JOIN users u ON rd.student_id = u.id
+                    WHERE rd.access_granted = FALSE
+                    ORDER BY rd.created_at DESC
+                ''')
+            requests = cursor.fetchall()
+        connection.close()
+        return requests
+    except Exception as e:
+        print(f"Error getting pending downloads: {e}")
+        return []
     
 # Add at the top with other imports
 import threading
@@ -229,17 +471,19 @@ def init_db():
             cursor.execute(f"USE {MYSQL_DB}")
             
             # Users table - Updated to include super_admin role
+            # In the init_db() function, update the users table creation:
             cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-                            id INT AUTO_INCREMENT PRIMARY KEY,
-                            email VARCHAR(100) UNIQUE NOT NULL,
-                            password VARCHAR(255) NOT NULL,
-                            name VARCHAR(100) NOT NULL,
-                            role ENUM('student', 'teacher', 'admin', 'super_admin') DEFAULT 'student',
-                            department VARCHAR(50) DEFAULT 'IT',
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            INDEX idx_email (email),
-                            INDEX idx_department (department)
-                            )''')
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(100) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                role ENUM('student', 'teacher', 'admin', 'super_admin') DEFAULT 'student',
+                department VARCHAR(50) DEFAULT 'IT',
+                phone VARCHAR(20),  # ADD THIS LINE
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_email (email),
+                INDEX idx_department (department)
+            )''')
             
             # In the init_db() function, update the forms table creation:
             cursor.execute('''CREATE TABLE IF NOT EXISTS forms (
@@ -335,6 +579,31 @@ def init_db():
                             INDEX idx_student_assignment (student_id),
                             INDEX idx_is_completed (is_completed),
                             UNIQUE KEY unique_assignment (form_id, student_id)
+                            )''')
+            
+            # Response download permissions table
+            cursor.execute('''CREATE TABLE IF NOT EXISTS response_downloads (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            response_id INT NOT NULL,
+                            student_id INT NOT NULL,
+                            form_id INT NOT NULL,
+                            access_granted BOOLEAN DEFAULT FALSE,
+                            granted_by INT,
+                            granted_at TIMESTAMP,
+                download_count INT DEFAULT 0,
+                last_downloaded_at TIMESTAMP NULL,
+                            download_token VARCHAR(100) UNIQUE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (response_id) REFERENCES responses(id) ON DELETE CASCADE,
+                            FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+                            FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
+                            FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE SET NULL,
+                            INDEX idx_response_download (response_id),
+                            INDEX idx_student_download (student_id),
+                            INDEX idx_form_download (form_id),
+                            INDEX idx_access_granted (access_granted),
+                            INDEX idx_download_token (download_token),
+                            UNIQUE KEY unique_response_student (response_id, student_id)
                             )''')
             
             # Responses table
@@ -496,6 +765,35 @@ def verify_otp(email, otp_code, purpose='login'):
     except Exception as e:
         print(f"Error verifying OTP: {e}")
         return False
+
+@app.route('/test-pdf')
+@login_required
+def test_pdf():
+    """Test PDF generation"""
+    try:
+        # Import inside function
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from io import BytesIO
+        
+        # Create simple PDF
+        buffer = BytesIO()
+        doc = canvas.Canvas(buffer, pagesize=letter)
+        doc.drawString(100, 750, "PDF Generation Test")
+        doc.drawString(100, 730, f"User: {session['name']}")
+        doc.drawString(100, 710, f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        doc.save()
+        
+        pdf_data = buffer.getvalue()
+        buffer.close()
+        
+        response = make_response(pdf_data)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = 'attachment; filename=test.pdf'
+        return response
+        
+    except Exception as e:
+        return f"PDF Error: {str(e)}", 500
     
 @app.route('/test-otp', methods=['GET', 'POST'])
 def test_otp():
@@ -610,70 +908,25 @@ def send_otp_email(email, otp_code, purpose='login'):
     
     return send_email(email, subject, html_content)
 
-# Decorators
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect('/login')
-        return f(*args, **kwargs)
-    return decorated_function
+# ... after all imports ...
 
-def teacher_required(f):
-    @wraps(f)
-    @login_required
-    def decorated_function(*args, **kwargs):
-        if session.get('role') not in ['teacher', 'admin', 'super_admin']:
-            return '''
-            <script>
-                alert("Teacher access required");
-                window.location.href = "/dashboard";
-            </script>
-            '''
-        return f(*args, **kwargs)
-    return decorated_function
+# Create Flask app ONCE
+app = Flask(__name__)
+app.secret_key = 'your-secret-key-change-in-production'  # Make sure this is set
 
-def admin_required(f):
-    @wraps(f)
-    @login_required
-    def decorated_function(*args, **kwargs):
-        if session.get('role') not in ['admin', 'super_admin']:
-            return '''
-            <script>
-                alert("Admin access required");
-                window.location.href = "/dashboard";
-            </script>
-            '''
-        return f(*args, **kwargs)
-    return decorated_function
 
-def student_required(f):
-    @wraps(f)
-    @login_required
-    def decorated_function(*args, **kwargs):
-        if session.get('role') != 'student':
-            return '''
-            <script>
-                alert("Student access required");
-                window.location.href = "/dashboard";
-            </script>
-            '''
-        return f(*args, **kwargs)
-    return decorated_function
+# ========== CONFIGURATION ==========
+# OTP Configuration
+OTP_EXPIRY_MINUTES = 10
+OTP_LENGTH = 6
 
-def super_admin_required(f):
-    @wraps(f)
-    @login_required
-    def decorated_function(*args, **kwargs):
-        if session.get('role') != 'super_admin':
-            return '''
-            <script>
-                alert("Super Admin access required");
-                window.location.href = "/dashboard";
-            </script>
-            '''
-        return f(*args, **kwargs)
-    return decorated_function
+# Database Configuration
+MYSQL_HOST = 'localhost'
+MYSQL_USER = 'root'
+MYSQL_PASSWORD = 'root'
+MYSQL_DB = 'form_system_db'
+
+# ... rest of the code continues ...
 
 # Notification functions
 def create_notification(user_id, title, message, type='info', link=None):
@@ -2955,7 +3208,9 @@ def dashboard():
             # Get forms based on user role and department
             if user_role in ['admin', 'super_admin']:
                 cursor.execute(f'''
-                    SELECT f.*, u.name as creator_name, u.department as creator_department 
+                    SELECT f.*, u.name as creator_name, u.department as creator_department,
+                           (SELECT COUNT(*) FROM responses WHERE form_id = f.id) as response_count,
+                           (SELECT COUNT(*) FROM assignments WHERE form_id = f.id) as assignment_count
                     FROM forms f 
                     JOIN users u ON f.created_by = u.id 
                     WHERE (f.is_student_submission = FALSE OR f.review_status = 'approved')
@@ -2965,7 +3220,9 @@ def dashboard():
                 forms = cursor.fetchall()
             elif user_role == 'teacher':
                 cursor.execute(f'''
-                    SELECT f.*, u.name as creator_name 
+                    SELECT f.*, u.name as creator_name,
+                           (SELECT COUNT(*) FROM responses WHERE form_id = f.id) as response_count,
+                           (SELECT COUNT(*) FROM assignments WHERE form_id = f.id) as assignment_count
                     FROM forms f 
                     JOIN users u ON f.created_by = u.id 
                     WHERE (f.is_student_submission = FALSE OR f.review_status = 'approved')
@@ -2975,15 +3232,16 @@ def dashboard():
                 forms = cursor.fetchall()
             else:
                 # Students only see forms from their department
-                cursor.execute('''
+                cursor.execute(f'''
                     SELECT f.*, u.name as creator_name,
                            (SELECT status FROM form_requests WHERE form_id = f.id AND student_id = %s) as request_status,
                            (SELECT 1 FROM assignments WHERE form_id = f.id AND student_id = %s) as is_assigned,
-                           (SELECT 1 FROM responses WHERE form_id = f.id AND student_id = %s) as has_submitted
+                           (SELECT 1 FROM responses WHERE form_id = f.id AND student_id = %s) as has_submitted,
+                           (SELECT COUNT(*) FROM responses WHERE form_id = f.id) as response_count
                     FROM forms f 
                     JOIN users u ON f.created_by = u.id 
                     WHERE f.department = %s 
-                    AND f.form_type = 'open'
+                    AND (f.form_type = 'public' OR f.form_type = 'open')
                     AND (f.is_student_submission = FALSE OR f.review_status = 'approved')
                     ORDER BY f.created_at DESC
                 ''', (user_id, user_id, user_id, user_dept))
@@ -2991,21 +3249,16 @@ def dashboard():
             
             # Get assigned forms for students
             assigned_forms = []
-            # In the dashboard() function, update the student forms query:
             if user_role == 'student':
                 cursor.execute('''
-                    SELECT f.*, u.name as creator_name,
-                           (SELECT status FROM form_requests WHERE form_id = f.id AND student_id = %s) as request_status,
-                           (SELECT 1 FROM assignments WHERE form_id = f.id AND student_id = %s) as is_assigned,
-                           (SELECT 1 FROM responses WHERE form_id = f.id AND student_id = %s) as has_submitted
-                    FROM forms f 
-                    JOIN users u ON f.created_by = u.id 
-                    WHERE f.department = %s 
-                    AND (f.form_type = 'public' OR f.form_type = 'open')  # CHANGED: Added 'public'
-                    AND (f.is_student_submission = FALSE OR f.review_status = 'approved')
-                    ORDER BY f.created_at DESC
-                ''', (user_id, user_id, user_id, user_dept))
-                forms = cursor.fetchall()
+                    SELECT f.*, u.name as creator_name, a.due_date, a.is_completed
+                    FROM assignments a
+                    JOIN forms f ON a.form_id = f.id
+                    JOIN users u ON f.created_by = u.id
+                    WHERE a.student_id = %s
+                    ORDER BY a.due_date, a.assigned_at DESC
+                ''', (user_id,))
+                assigned_forms = cursor.fetchall()
             
             # Get pending requests count for teachers/admin
             pending_requests_count = 0
@@ -3049,6 +3302,23 @@ def dashboard():
                     ''', (user_dept,))
                 pending_reviews_count = cursor.fetchone()['count']
             
+            # Get pending download requests count for teachers/admin
+            pending_downloads_count = 0
+            if user_role in ['teacher', 'admin', 'super_admin']:
+                if user_role in ['admin', 'super_admin']:
+                    cursor.execute('''
+                        SELECT COUNT(*) as count FROM response_downloads rd
+                        JOIN forms f ON rd.form_id = f.id
+                        WHERE rd.access_granted = FALSE
+                    ''')
+                else:
+                    cursor.execute('''
+                        SELECT COUNT(*) as count FROM response_downloads rd
+                        JOIN forms f ON rd.form_id = f.id
+                        WHERE rd.access_granted = FALSE AND f.created_by = %s
+                    ''', (user_id,))
+                pending_downloads_count = cursor.fetchone()['count']
+            
             # Get department statistics for admin
             dept_stats = {}
             if user_role in ['admin', 'super_admin']:
@@ -3057,7 +3327,8 @@ def dashboard():
                            COUNT(*) as form_count,
                            SUM(CASE WHEN is_student_submission = TRUE THEN 1 ELSE 0 END) as student_forms,
                            SUM(CASE WHEN review_status = 'approved' THEN 1 ELSE 0 END) as approved_forms,
-                           SUM(CASE WHEN is_published = TRUE THEN 1 ELSE 0 END) as published_forms
+                           SUM(CASE WHEN is_published = TRUE THEN 1 ELSE 0 END) as published_forms,
+                           COUNT(DISTINCT created_by) as active_teachers
                     FROM forms 
                     GROUP BY department
                 ''')
@@ -3071,7 +3342,9 @@ def dashboard():
                         COUNT(*) as total_forms_taken,
                         AVG(percentage) as avg_score,
                         SUM(CASE WHEN percentage >= 70 THEN 1 ELSE 0 END) as passed_forms,
-                        SUM(CASE WHEN percentage < 70 THEN 1 ELSE 0 END) as failed_forms
+                        SUM(CASE WHEN percentage < 70 THEN 1 ELSE 0 END) as failed_forms,
+                        MAX(percentage) as highest_score,
+                        MIN(percentage) as lowest_score
                     FROM responses 
                     WHERE student_id = %s
                 ''', (user_id,))
@@ -3086,6 +3359,188 @@ def dashboard():
                 ''', (user_id,))
                 pending_subs = cursor.fetchone()
                 student_stats['pending_submissions'] = pending_subs['pending_submissions'] if pending_subs else 0
+                
+                # Get pending download requests count for student
+                cursor.execute('''
+                    SELECT COUNT(*) as pending_downloads
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    WHERE r.student_id = %s AND rd.access_granted = FALSE
+                ''', (user_id,))
+                pending_dls = cursor.fetchone()
+                student_stats['pending_downloads'] = pending_dls['pending_downloads'] if pending_dls else 0
+                
+                # Get granted downloads count for student
+                cursor.execute('''
+                    SELECT COUNT(*) as granted_downloads
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    WHERE r.student_id = %s AND rd.access_granted = TRUE
+                ''', (user_id,))
+                granted_dls = cursor.fetchone()
+                student_stats['granted_downloads'] = granted_dls['granted_downloads'] if granted_dls else 0
+            
+            # Teacher statistics
+            teacher_stats = {}
+            if user_role in ['teacher', 'admin', 'super_admin']:
+                if user_role in ['admin', 'super_admin']:
+                    cursor.execute('''
+                        SELECT 
+                            COUNT(DISTINCT f.id) as total_forms,
+                            COUNT(DISTINCT r.id) as total_responses,
+                            AVG(r.percentage) as avg_score,
+                            COUNT(DISTINCT CASE WHEN f.is_student_submission = TRUE THEN f.id END) as student_forms,
+                            COUNT(DISTINCT a.id) as total_assignments
+                        FROM forms f
+                        LEFT JOIN responses r ON f.id = r.form_id
+                        LEFT JOIN assignments a ON f.id = a.form_id
+                        WHERE f.created_by = %s OR 1=1
+                    ''', (user_id,))
+                else:
+                    cursor.execute('''
+                        SELECT 
+                            COUNT(DISTINCT f.id) as total_forms,
+                            COUNT(DISTINCT r.id) as total_responses,
+                            AVG(r.percentage) as avg_score,
+                            COUNT(DISTINCT CASE WHEN f.is_student_submission = TRUE THEN f.id END) as student_forms,
+                            COUNT(DISTINCT a.id) as total_assignments
+                        FROM forms f
+                        LEFT JOIN responses r ON f.id = r.form_id
+                        LEFT JOIN assignments a ON f.id = a.form_id
+                        WHERE f.created_by = %s
+                    ''', (user_id,))
+                teacher_stats = cursor.fetchone()
+            
+            # Recent activities
+            recent_activities = []
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('''
+                    (SELECT 
+                        'form_created' as type,
+                        f.title as description,
+                        u.name as user_name,
+                        f.created_at as timestamp,
+                        CONCAT('/form/', f.id, '/edit') as link
+                    FROM forms f
+                    JOIN users u ON f.created_by = u.id
+                    ORDER BY f.created_at DESC
+                    LIMIT 3)
+                    
+                    UNION ALL
+                    
+                    (SELECT 
+                        'response_submitted' as type,
+                        CONCAT('Submitted: ', f.title) as description,
+                        u.name as user_name,
+                        r.submitted_at as timestamp,
+                        CONCAT('/form/', f.id, '/responses') as link
+                    FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    ORDER BY r.submitted_at DESC
+                    LIMIT 3)
+                    
+                    UNION ALL
+                    
+                    (SELECT 
+                        'download_requested' as type,
+                        CONCAT('Download: ', f.title) as description,
+                        u.name as user_name,
+                        rd.created_at as timestamp,
+                        CONCAT('/form/', f.id, '/response-downloads') as link
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON rd.student_id = u.id
+                    WHERE rd.access_granted = FALSE
+                    ORDER BY rd.created_at DESC
+                    LIMIT 3)
+                    
+                    ORDER BY timestamp DESC
+                    LIMIT 5
+                ''')
+            elif user_role == 'teacher':
+                cursor.execute('''
+                    (SELECT 
+                        'response_submitted' as type,
+                        CONCAT('Submitted: ', f.title) as description,
+                        u.name as user_name,
+                        r.submitted_at as timestamp,
+                        CONCAT('/form/', f.id, '/responses') as link
+                    FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE f.created_by = %s
+                    ORDER BY r.submitted_at DESC
+                    LIMIT 3)
+                    
+                    UNION ALL
+                    
+                    (SELECT 
+                        'download_requested' as type,
+                        CONCAT('Download: ', f.title) as description,
+                        u.name as user_name,
+                        rd.created_at as timestamp,
+                        CONCAT('/form/', f.id, '/response-downloads') as link
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON rd.student_id = u.id
+                    WHERE f.created_by = %s AND rd.access_granted = FALSE
+                    ORDER BY rd.created_at DESC
+                    LIMIT 3)
+                    
+                    UNION ALL
+                    
+                    (SELECT 
+                        'form_requested' as type,
+                        CONCAT('Access: ', f.title) as description,
+                        u.name as user_name,
+                        fr.requested_at as timestamp,
+                        '/form-requests' as link
+                    FROM form_requests fr
+                    JOIN forms f ON fr.form_id = f.id
+                    JOIN users u ON fr.student_id = u.id
+                    WHERE f.created_by = %s AND fr.status = 'pending'
+                    ORDER BY fr.requested_at DESC
+                    LIMIT 3)
+                    
+                    ORDER BY timestamp DESC
+                    LIMIT 5
+                ''', (user_id, user_id, user_id))
+            elif user_role == 'student':
+                cursor.execute('''
+                    (SELECT 
+                        'response_submitted' as type,
+                        CONCAT('Submitted: ', f.title) as description,
+                        'You' as user_name,
+                        r.submitted_at as timestamp,
+                        '/my-responses' as link
+                    FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    WHERE r.student_id = %s
+                    ORDER BY r.submitted_at DESC
+                    LIMIT 3)
+                    
+                    UNION ALL
+                    
+                    (SELECT 
+                        'download_granted' as type,
+                        CONCAT('Download ready: ', f.title) as description,
+                        'System' as user_name,
+                        rd.granted_at as timestamp,
+                        '/my-responses/downloads' as link
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    WHERE r.student_id = %s AND rd.access_granted = TRUE
+                    ORDER BY rd.granted_at DESC
+                    LIMIT 3)
+                    
+                    ORDER BY timestamp DESC
+                    LIMIT 5
+                ''', (user_id, user_id))
+            recent_activities = cursor.fetchall()
         
         connection.close()
         
@@ -3133,8 +3588,8 @@ def dashboard():
                             <h6>{stat['department']}</h6>
                             <h4>{stat['form_count']}</h4>
                             <small class="text-muted">
+                                Teachers: {stat['active_teachers']}<br>
                                 Student Forms: {stat['student_forms']}<br>
-                                Approved: {stat['approved_forms']}<br>
                                 Published: {stat['published_forms']}
                             </small>
                             <div class="mt-2">
@@ -3153,9 +3608,8 @@ def dashboard():
         for form in forms:
             status_badge = 'badge-success' if form['is_published'] else 'badge-warning'
             status_text = 'Published' if form['is_published'] else 'Draft'
-            # In the dashboard() function, update the type_badge logic:
-            type_badge = 'badge-info' if form['form_type'] == 'open' else 'badge-success' if form['form_type'] == 'public' else 'badge-purple'  # CHANGED
-            type_text = 'Open' if form['form_type'] == 'open' else 'Public' if form['form_type'] == 'public' else 'Confidential'  # CHANGED
+            type_badge = 'badge-info' if form['form_type'] == 'open' else 'badge-success' if form['form_type'] == 'public' else 'badge-purple'
+            type_text = 'Open' if form['form_type'] == 'open' else 'Public' if form['form_type'] == 'public' else 'Confidential'
             
             # Check if it's a student submission
             student_badge = ''
@@ -3221,10 +3675,36 @@ def dashboard():
                     '''
             
             # Student actions for taking forms
-            # In the dashboard() function, update the student_actions logic:
             if user_role == 'student':
                 if has_submitted:
-                    student_actions = '<span class="badge bg-success"><i class="fas fa-check"></i> Submitted</span>'
+                    # Check download access for submitted forms
+                    connection = get_db()
+                    with connection.cursor() as cursor:
+                        cursor.execute('''
+                            SELECT r.id as response_id, rd.access_granted, f.form_type
+                            FROM responses r
+                            LEFT JOIN response_downloads rd ON r.id = rd.response_id AND rd.student_id = %s
+                            JOIN forms f ON r.form_id = f.id
+                            WHERE r.form_id = %s AND r.student_id = %s
+                        ''', (user_id, form['id'], user_id))
+                        response_info = cursor.fetchone()
+                    connection.close()
+                    
+                    if response_info:
+                        if response_info['form_type'] == 'public' or response_info['access_granted']:
+                            student_actions = f'''
+                            <a href="/my-responses/downloads" class="btn btn-sm btn-success">
+                                <i class="fas fa-download"></i> Download
+                            </a>
+                            '''
+                        else:
+                            student_actions = f'''
+                            <button onclick="requestDownloadByForm({form['id']})" class="btn btn-sm btn-outline-warning">
+                                <i class="fas fa-paper-plane"></i> Request Download
+                            </button>
+                            '''
+                    else:
+                        student_actions = '<span class="badge bg-success"><i class="fas fa-check"></i> Submitted</span>'
                 elif is_assigned:
                     student_actions = f'<a href="/form/{form["id"]}/take" class="btn btn-sm btn-primary"><i class="fas fa-play"></i> Start</a>'
                 elif request_status == 'approved':
@@ -3245,6 +3725,16 @@ def dashboard():
             if user_role in ['admin', 'super_admin'] and 'creator_department' in form:
                 dept_info = f'<i class="fas fa-building me-1"></i>{form["department"]} (Creator Dept: {form["creator_department"]})'
             
+            # Response and assignment counts
+            stats_info = ''
+            if form.get('response_count') is not None or form.get('assignment_count') is not None:
+                stats_info = f'<small class="text-muted d-block mt-1">'
+                if form.get('response_count') is not None:
+                    stats_info += f'<i class="fas fa-paper-plane me-1"></i>{form["response_count"]} responses'
+                if form.get('assignment_count') is not None:
+                    stats_info += f' | <i class="fas fa-tasks me-1"></i>{form["assignment_count"]} assigned'
+                stats_info += '</small>'
+            
             forms_html += f'''
             <div class="card mb-3 {'student-form-card' if form.get('is_student_submission') else ''}">
                 <div class="card-body">
@@ -3257,6 +3747,7 @@ def dashboard():
                                 {dept_info} |
                                 <span class="badge {type_badge}">{type_text}</span>
                             </small>
+                            {stats_info}
                         </div>
                         <span class="badge {status_badge}">{status_text}</span>
                     </div>
@@ -3281,14 +3772,54 @@ def dashboard():
             </div>
             '''
         
-        # Render assigned forms for students
+        # Render assigned forms for students - FIXED THE COMPARISON ERROR HERE
         assigned_html = ''
         if user_role == 'student':
             for form in assigned_forms:
                 status_badge = 'badge-success' if form['is_completed'] else 'badge-danger'
                 status_text = 'Completed' if form['is_completed'] else 'Pending'
                 
-                start_button = f'<a href="/form/{form["id"]}/take" class="btn btn-sm btn-primary"><i class="fas fa-play"></i> Start</a>' if not form['is_completed'] else '<span class="text-success"><i class="fas fa-check"></i> Submitted</span>'
+                if form['is_completed']:
+                    # Check if download is available
+                    connection = get_db()
+                    with connection.cursor() as cursor:
+                        cursor.execute('''
+                            SELECT r.id as response_id, rd.access_granted, f.form_type
+                            FROM responses r
+                            LEFT JOIN response_downloads rd ON r.id = rd.response_id AND rd.student_id = %s
+                            JOIN forms f ON r.form_id = f.id
+                            WHERE r.form_id = %s AND r.student_id = %s
+                        ''', (user_id, form['id'], user_id))
+                        response_info = cursor.fetchone()
+                    connection.close()
+                    
+                    if response_info and (response_info['form_type'] == 'public' or response_info['access_granted']):
+                        start_button = f'<a href="/my-responses/downloads" class="btn btn-sm btn-success"><i class="fas fa-download"></i> Download</a>'
+                    else:
+                        start_button = '<span class="text-success"><i class="fas fa-check"></i> Submitted</span>'
+                else:
+                    start_button = f'<a href="/form/{form["id"]}/take" class="btn btn-sm btn-primary"><i class="fas fa-play"></i> Start</a>'
+                
+                due_date_info = ''
+                if form['due_date']:
+                    due_date = form['due_date']
+                    # Ensure due_date is a datetime object
+                    if isinstance(due_date, str):
+                        # Convert string to datetime
+                        try:
+                            due_date = datetime.strptime(due_date, '%Y-%m-%d %H:%M:%S')
+                        except ValueError:
+                            try:
+                                due_date = datetime.strptime(due_date, '%Y-%m-%d')
+                            except:
+                                due_date = None
+                    
+                    if due_date:
+                        now = datetime.now()
+                        if due_date < now and not form['is_completed']:
+                            due_date_info = f'<small class="text-danger"><i class="fas fa-exclamation-triangle me-1"></i>Overdue: {due_date.strftime("%Y-%m-%d")}</small>'
+                        else:
+                            due_date_info = f'<small class="text-muted"><i class="fas fa-calendar me-1"></i>Due: {due_date.strftime("%Y-%m-%d")}</small>'
                 
                 assigned_html += f'''
                 <div class="card mb-3">
@@ -3298,7 +3829,7 @@ def dashboard():
                                 <h5 class="mb-1">{form['title']}</h5>
                                 <small class="text-muted">
                                     <i class="fas fa-building me-1"></i>{form['department']}
-                                    {f'| Due: {form["due_date"].strftime("%Y-%m-%d") if form["due_date"] else "No due date"}'}
+                                    {due_date_info}
                                 </small>
                             </div>
                             <span class="badge {status_badge}">{status_text}</span>
@@ -3322,26 +3853,101 @@ def dashboard():
                     <div class="stat-card student-stats-card">
                         <h5>Forms Taken</h5>
                         <h2>{student_stats.get('total_forms_taken', 0) or 0}</h2>
+                        <small>Passed: {student_stats.get('passed_forms', 0)}</small>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <div class="stat-card" style="background: linear-gradient(45deg, #3b82f6, #1d4ed8);">
                         <h5>Average Score</h5>
                         <h2>{student_stats.get('avg_score', 0) or 0:.1f}%</h2>
+                        <small>Best: {student_stats.get('highest_score', 0) or 0:.1f}%</small>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <div class="stat-card" style="background: linear-gradient(45deg, #10b981, #059669);">
-                        <h5>Passed Forms</h5>
-                        <h2>{student_stats.get('passed_forms', 0) or 0}</h2>
+                        <h5>Downloads</h5>
+                        <h2>{student_stats.get('granted_downloads', 0) or 0}</h2>
+                        <small>Pending: {student_stats.get('pending_downloads', 0)}</small>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <div class="stat-card" style="background: linear-gradient(45deg, #8b5cf6, #7c3aed);">
-                        <h5>Pending Submissions</h5>
+                        <h5>Pending</h5>
                         <h2>{student_stats.get('pending_submissions', 0) or 0}</h2>
+                        <small>Submissions</small>
                     </div>
                 </div>
+            </div>
+            '''
+        
+        # Teacher statistics display
+        teacher_stats_html = ''
+        if user_role in ['teacher', 'admin', 'super_admin'] and teacher_stats:
+            teacher_stats_html = f'''
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <div class="stat-card" style="background: linear-gradient(45deg, #667eea, #764ba2);">
+                        <h5>Total Forms</h5>
+                        <h2>{teacher_stats.get('total_forms', 0) or 0}</h2>
+                        <small>Student Forms: {teacher_stats.get('student_forms', 0)}</small>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card" style="background: linear-gradient(45deg, #10b981, #059669);">
+                        <h5>Total Responses</h5>
+                        <h2>{teacher_stats.get('total_responses', 0) or 0}</h2>
+                        <small>Avg Score: {teacher_stats.get('avg_score', 0) or 0:.1f}%</small>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card" style="background: linear-gradient(45deg, #f59e0b, #d97706);">
+                        <h5>Assignments</h5>
+                        <h2>{teacher_stats.get('total_assignments', 0) or 0}</h2>
+                        <small>Active</small>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card" style="background: linear-gradient(45deg, #ef4444, #dc2626);">
+                        <h5>Pending</h5>
+                        <h2>{pending_requests_count + pending_reviews_count + pending_downloads_count}</h2>
+                        <small>Requests/Reviews/Downloads</small>
+                    </div>
+                </div>
+            </div>
+            '''
+        
+        # Recent activities HTML
+        recent_activities_html = ''
+        if recent_activities:
+            for activity in recent_activities:
+                icon_map = {
+                    'form_created': 'fa-file-alt text-primary',
+                    'response_submitted': 'fa-paper-plane text-success',
+                    'download_requested': 'fa-download text-warning',
+                    'download_granted': 'fa-check-circle text-success',
+                    'form_requested': 'fa-hand-paper text-info'
+                }
+                icon = icon_map.get(activity['type'], 'fa-info-circle')
+                time_ago = get_time_ago(activity['timestamp'])
+                
+                recent_activities_html += f'''
+                <div class="d-flex mb-3">
+                    <div class="flex-shrink-0">
+                        <i class="fas {icon} fa-lg mt-1"></i>
+                    </div>
+                    <div class="flex-grow-1 ms-3">
+                        <h6 class="mb-1">{activity['description']}</h6>
+                        <p class="mb-0 text-muted">By {activity['user_name']}</p>
+                        <small class="text-muted">{time_ago}</small>
+                        {f'<a href="{activity["link"]}" class="btn btn-sm btn-outline-primary mt-1">View</a>' if activity.get('link') and activity['link'] != '#' else ''}
+                    </div>
+                </div>
+                '''
+        else:
+            recent_activities_html = '''
+            <div class="text-center py-3">
+                <i class="fas fa-history fa-2x text-muted mb-2"></i>
+                <p class="text-muted">No recent activities</p>
             </div>
             '''
         
@@ -3349,9 +3955,9 @@ def dashboard():
         col_width = '12'
         assigned_section = ''
         if user_role == 'student':
-            col_width = '6'
+            col_width = '8'
             assigned_section = f'''
-            <div class="col-md-6">
+            <div class="col-md-4">
                 <div class="card">
                     <div class="card-header">
                         <h5 class="mb-0"><i class="fas fa-tasks me-2"></i>Assigned Forms ({len(assigned_forms)})</h5>
@@ -3373,15 +3979,108 @@ def dashboard():
         if user_role in ['teacher', 'admin', 'super_admin'] and pending_reviews_count > 0:
             reviews_badge = f'<span class="badge bg-warning request-badge">{pending_reviews_count}</span>'
         
+        # Pending downloads badge for teachers/admin
+        downloads_badge = ''
+        if user_role in ['teacher', 'admin', 'super_admin'] and pending_downloads_count > 0:
+            downloads_badge = f'<span class="badge bg-info request-badge">{pending_downloads_count}</span>'
+        
+        # Quick actions for teachers/admin
+        quick_actions = ''
+        if user_role in ['teacher', 'admin', 'super_admin']:
+            quick_actions = f'''
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <a href="/create-form" class="btn btn-primary w-100">
+                        <i class="fas fa-plus me-2"></i>Create Form
+                    </a>
+                </div>
+                <div class="col-md-3">
+                    <a href="/form-requests" class="btn btn-warning w-100">
+                        <i class="fas fa-clock me-2"></i>Access Requests {requests_badge}
+                    </a>
+                </div>
+                <div class="col-md-3">
+                    <a href="/review-forms" class="btn btn-info w-100">
+                        <i class="fas fa-check-circle me-2"></i>Review Forms {reviews_badge}
+                    </a>
+                </div>
+                <div class="col-md-3">
+                    <a href="#" onclick="viewDownloadRequests()" class="btn btn-success w-100">
+                        <i class="fas fa-download me-2"></i>Download Requests {downloads_badge}
+                    </a>
+                </div>
+            </div>
+            '''
+        elif user_role == 'student':
+            quick_actions = f'''
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <a href="/create-student-form" class="btn btn-success w-100">
+                        <i class="fas fa-plus-circle me-2"></i>Create Form
+                    </a>
+                </div>
+                <div class="col-md-4">
+                    <a href="/my-responses" class="btn btn-primary w-100">
+                        <i class="fas fa-chart-bar me-2"></i>My Results
+                    </a>
+                </div>
+                <div class="col-md-4">
+                    <a href="/my-responses/downloads" class="btn btn-warning w-100">
+                        <i class="fas fa-download me-2"></i>My Downloads
+                        {f'<span class="badge bg-danger ms-2">{student_stats.get("pending_downloads", 0)}</span>' if student_stats.get('pending_downloads', 0) > 0 else ''}
+                    </a>
+                </div>
+            </div>
+            '''
+        
         # Build dashboard
+        sidebar_html = f'''<div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="fas fa-history me-2"></i>Recent Activities</h5>
+                </div>
+                <div class="card-body">
+                    {recent_activities_html}
+                </div>
+            </div>
+            
+            <!-- Quick Stats -->
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="fas fa-chart-pie me-2"></i>Quick Stats</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row text-center">
+                        <div class="col-6">
+                            <h4>{len(forms)}</h4>
+                            <small class="text-muted">Forms</small>
+                        </div>
+                        <div class="col-6">
+                            <h4>{sum([f.get('response_count', 0) for f in forms])}</h4>
+                            <small class="text-muted">Total Responses</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>''' if user_role != 'student' else ''
+        
         content = f'''
         <div class="mb-4">
             <div class="d-flex justify-content-between align-items-center">
-                <h2 class="text-white">Welcome, {session["name"]}!</h2>
                 <div>
-                    <span class="badge bg-light text-dark me-2">{session["department"]}</span>
-                    {f'<a href="/create-form" class="btn btn-primary"><i class="fas fa-plus me-2"></i>Create Form</a>' if user_role in ['teacher', 'admin', 'super_admin'] else ''}
-                    {f'<a href="/create-student-form" class="btn btn-success"><i class="fas fa-plus-circle me-2"></i>Create Form</a>' if user_role == 'student' else ''}
+                    <h2 class="text-white">Welcome, {session["name"]}!</h2>
+                    <p class="text-white-50 mb-0">
+                        <span class="badge bg-light text-dark me-2">{session["department"]}</span>
+                        <span class="badge {'badge-super-admin' if user_role == 'super_admin' else 'bg-danger' if user_role == 'admin' else 'bg-warning' if user_role == 'teacher' else 'student-stats-card'}">
+                            {user_role.upper().replace('_', ' ')}
+                        </span>
+                    </p>
+                </div>
+                <div>
+                    <a href="/notifications" class="btn btn-outline-light position-relative me-2">
+                        <i class="fas fa-bell"></i>
+                        {f'<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{get_unread_notification_count(user_id)}</span>' if get_unread_notification_count(user_id) > 0 else ''}
+                    </a>
                 </div>
             </div>
         </div>
@@ -3389,6 +4088,9 @@ def dashboard():
         {dept_filter_html}
         {dept_stats_html}
         {student_stats_html}
+        {teacher_stats_html}
+        
+        {quick_actions}
         
         <div class="row">
             <div class="col-md-{col_width}">
@@ -3396,8 +4098,6 @@ def dashboard():
                     <div class="card-header">
                         <h5 class="mb-0">
                             <i class="fas fa-list me-2"></i>Available Forms ({len(forms)})
-                            {requests_badge}
-                            {reviews_badge}
                         </h5>
                     </div>
                     <div class="card-body">
@@ -3406,6 +4106,9 @@ def dashboard():
                 </div>
             </div>
             {assigned_section}
+            
+            <!-- Recent Activities Sidebar -->
+            {sidebar_html}
         </div>
         '''
         
@@ -3425,6 +4128,46 @@ def dashboard():
                         } else {
                             alert('Error: ' + data.error);
                         }
+                    });
+                }
+            }
+            
+            function requestDownloadByForm(formId) {
+                // First get the response ID for this form
+                fetch('/api/get-response/' + formId, {
+                    method: 'GET',
+                    headers: {'Content-Type': 'application/json'}
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success && data.response_id) {
+                        requestDownload(data.response_id);
+                    } else {
+                        alert('Error: ' + (data.error || 'No response found for this form'));
+                    }
+                })
+                .catch(error => {
+                    alert('Network error: ' + error);
+                });
+            }
+            
+            function requestDownload(responseId) {
+                if (confirm('Request download permission for this response?')) {
+                    fetch('/request-download/' + responseId, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert(data.message);
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + data.error);
+                        }
+                    })
+                    .catch(error => {
+                        alert('Network error: ' + error);
                     });
                 }
             }
@@ -3469,7 +4212,91 @@ def dashboard():
                     });
                 }
             }
+            
+            function viewDownloadRequests() {
+            // For teachers/admins, show their forms with download requests
+            fetch('/api/my-forms-download-requests', {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }
+            })
+            .then(res => {
+                // Check if response is JSON
+                const contentType = res.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    return res.text().then(text => {
+                        throw new Error('Expected JSON but got: ' + text.substring(0, 100));
+                    });
+                }
+                return res.json();
+            })
+            .then(data => {
+                if (data.success && data.forms.length > 0) {
+                    let html = '<h5>Forms with Pending Download Requests</h5>';
+                    data.forms.forEach(form => {
+                        html += `
+                            <div class="card mb-2">
+                                <div class="card-body">
+                                    <h6>${form.title}</h6>
+                                    <p class="text-muted">Pending requests: ${form.pending_downloads}</p>
+                                    <a href="/form/${form.id}/response-downloads" class="btn btn-sm btn-primary">Manage</a>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    // Show in modal
+                    const modal = new bootstrap.Modal(document.getElementById('downloadRequestsModal'));
+                    document.getElementById('downloadRequestsContent').innerHTML = html;
+                    modal.show();
+                } else {
+                    alert('No forms with pending download requests.');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error loading download requests. Please try again.');
+            });
+        }
+            
+            // Auto-refresh notifications every 30 seconds
+            setInterval(() => {
+                fetch('/api/notifications/recent')
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            // Update notification badge
+                            const badge = document.querySelector('.notification-badge');
+                            if (data.unread_count > 0) {
+                                if (badge) {
+                                    badge.innerHTML = `<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">${data.unread_count}</span>`;
+                                }
+                            } else if (badge) {
+                                badge.innerHTML = '';
+                            }
+                        }
+                    });
+            }, 30000);
         </script>
+        
+        <!-- Download Requests Modal -->
+        <div class="modal fade" id="downloadRequestsModal" tabindex="-1" aria-labelledby="downloadRequestsModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="downloadRequestsModalLabel">Download Requests</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body" id="downloadRequestsContent">
+                        <!-- Content loaded dynamically -->
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
         '''
         
         return html_wrapper('Dashboard', content, get_navbar(), scripts)
@@ -3478,6 +4305,1915 @@ def dashboard():
         print(f"Dashboard error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+
+
+def get_navbar():
+    if 'user_id' not in session:
+        return ''
+    
+    # Get unread notification count
+    unread_count = get_unread_notification_count(session['user_id'])
+    notification_badge = ''
+    if unread_count > 0:
+        notification_badge = f'<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{unread_count}</span>'
+    
+    user_badge = ''
+    badge_class = ''
+    badge_color = ''
+    if session['role'] == 'super_admin':
+        user_badge = '<span class="badge badge-super-admin">SUPER ADMIN</span>'
+        badge_class = 'badge-super-admin'
+        badge_color = 'linear-gradient(135deg, #6f42c1, #5a32a3)'
+    elif session['role'] == 'admin':
+        user_badge = '<span class="badge bg-danger">ADMIN</span>'
+        badge_class = 'bg-danger'
+        badge_color = 'linear-gradient(135deg, #dc3545, #c82333)'
+    elif session['role'] == 'teacher':
+        user_badge = '<span class="badge bg-warning text-dark">TEACHER</span>'
+        badge_class = 'bg-warning text-dark'
+        badge_color = 'linear-gradient(135deg, #ffc107, #e0a800)'
+    else:
+        user_badge = '<span class="badge student-stats-card">STUDENT</span>'
+        badge_class = 'student-stats-card'
+        badge_color = 'linear-gradient(135deg, #6c757d, #5a6268)'
+    
+    dept_badge = '<span class="badge bg-dark ms-1 ms-md-2">' + session.get('department', 'N/A') + '</span>'
+    
+    # Create navigation sections based on role
+    main_nav_items = []
+    quick_access_items = []
+    admin_items = []
+    
+    # Common items for all logged-in users
+    main_nav_items.append('<a class="nav-link" href="/dashboard"><i class="fas fa-home me-2"></i>Dashboard</a>')
+    
+    # Role-specific main navigation
+    if session['role'] in ['teacher', 'admin', 'super_admin']:
+        main_nav_items.append('<a class="nav-link" href="/create-form"><i class="fas fa-plus me-2"></i>Create Form</a>')
+        main_nav_items.append('<a class="nav-link" href="/review-forms"><i class="fas fa-check-circle me-2"></i>Review Forms</a>')
+        quick_access_items.append('<a class="dropdown-item" href="/form-requests"><i class="fas fa-clock me-2"></i>Pending Requests</a>')
+        quick_access_items.append('<a class="dropdown-item" href="/teacher-analytics"><i class="fas fa-chart-bar me-2"></i>Analytics</a>')
+    
+    if session['role'] == 'student':
+        main_nav_items.append('<a class="nav-link" href="/create-student-form"><i class="fas fa-plus-circle me-2"></i>Create Form</a>')
+        main_nav_items.append('<a class="nav-link" href="/my-submissions"><i class="fas fa-history me-2"></i>My Submissions</a>')
+        quick_access_items.append('<a class="dropdown-item" href="/my-responses"><i class="fas fa-chart-bar me-2"></i>My Results</a>')
+    
+    if session['role'] in ['admin', 'super_admin']:
+        admin_items.append('<a class="dropdown-item" href="/admin"><i class="fas fa-cogs me-2"></i>Admin Panel</a>')
+        admin_items.append('<a class="dropdown-item" href="/admin/test"><i class="fas fa-vial me-2"></i>System Test</a>')
+    
+    # Profile icon with initials
+    user_name = session["name"]
+    initials = ''.join([name[0].upper() for name in user_name.split()[:2]])
+    
+    # Build conditional sections
+    teacher_admin_html = ''
+    if session['role'] in ['teacher', 'admin', 'super_admin']:
+        teacher_admin_html = '''
+        <a href="/create-form" class="list-group-item list-group-item-action border-0 py-3">
+            <i class="fas fa-plus me-3 text-success"></i>Create Form
+        </a>
+        <a href="/review-forms" class="list-group-item list-group-item-action border-0 py-3">
+            <i class="fas fa-check-circle me-3 text-info"></i>Review Forms
+        </a>
+        <a href="/form-requests" class="list-group-item list-group-item-action border-0 py-3">
+            <i class="fas fa-clock me-3 text-warning"></i>Pending Requests
+        </a>
+        <a href="/teacher-analytics" class="list-group-item list-group-item-action border-0 py-3">
+            <i class="fas fa-chart-bar me-3 text-purple"></i>Analytics
+        </a>
+        '''
+    
+    student_html = ''
+    if session['role'] == 'student':
+        student_html = '''
+        <a href="/create-student-form" class="list-group-item list-group-item-action border-0 py-3">
+            <i class="fas fa-plus-circle me-3 text-success"></i>Create Form
+        </a>
+        <a href="/my-submissions" class="list-group-item list-group-item-action border-0 py-3">
+            <i class="fas fa-history me-3 text-secondary"></i>My Submissions
+        </a>
+        <a href="/my-responses" class="list-group-item list-group-item-action border-0 py-3">
+            <i class="fas fa-chart-bar me-3 text-info"></i>My Results
+        </a>
+        '''
+    
+    admin_tools_html = ''
+    if session['role'] in ['admin', 'super_admin']:
+        admin_tools_html = '''
+        <div class="border-top mt-2 pt-2">
+            <div class="text-muted small px-3 py-2">Admin Tools</div>
+            <a href="/admin" class="list-group-item list-group-item-action border-0 py-3">
+                <i class="fas fa-cogs me-3 text-danger"></i>Admin Panel
+            </a>
+            <a href="/admin/test" class="list-group-item list-group-item-action border-0 py-3">
+                <i class="fas fa-vial me-3 text-danger"></i>System Test
+            </a>
+        </div>
+        '''
+    
+    # Build mobile navigation (collapsible)
+    mobile_nav = '''
+    <!-- Mobile Navigation -->
+    <div class="offcanvas offcanvas-end" tabindex="-1" id="mobileNav" aria-labelledby="mobileNavLabel">
+        <div class="offcanvas-header border-bottom">
+            <div class="d-flex align-items-center">
+                <div class="rounded-circle d-flex align-items-center justify-content-center me-3"
+                     style="width: 50px; height: 50px; background: ''' + badge_color + '''; color: white; font-weight: bold;">
+                    ''' + initials + '''
+                </div>
+                <div>
+                    <h5 class="offcanvas-title fw-bold" id="mobileNavLabel">''' + user_name + '''</h5>
+                    <div>''' + user_badge + ' ' + dept_badge + '''</div>
+                </div>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+        </div>
+        <div class="offcanvas-body p-0">
+            <div class="list-group list-group-flush">
+                <a href="/dashboard" class="list-group-item list-group-item-action border-0 py-3">
+                    <i class="fas fa-home me-3 text-primary"></i>Dashboard
+                </a>
+                
+                ''' + teacher_admin_html + '''
+                ''' + student_html + '''
+                ''' + admin_tools_html + '''
+                
+                <div class="border-top mt-2 pt-2">
+                    <a href="/profile" class="list-group-item list-group-item-action border-0 py-3">
+                        <i class="fas fa-user me-3"></i>My Profile
+                    </a>
+                    <a href="/settings" class="list-group-item list-group-item-action border-0 py-3">
+                        <i class="fas fa-cog me-3"></i>Settings
+                    </a>
+                    <a href="/notifications" class="list-group-item list-group-item-action border-0 py-3">
+                        <i class="fas fa-bell me-3"></i>Notifications
+                        ''' + (f'<span class="badge bg-danger float-end mt-1">{unread_count}</span>' if unread_count > 0 else '') + '''
+                    </a>
+                </div>
+                
+                <div class="border-top mt-2 pt-3 px-3">
+                    <a href="/logout" class="btn btn-outline-danger w-100">
+                        <i class="fas fa-sign-out-alt me-2"></i>Logout
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    '''
+    
+    # Build quick access dropdown HTML
+    quick_access_dropdown = ''
+    if quick_access_items:
+        quick_access_dropdown = '''
+        <li class="nav-item dropdown mx-1">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                <i class="fas fa-bolt me-2"></i>Quick Access
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end">
+                ''' + ''.join(quick_access_items) + '''
+            </ul>
+        </li>
+        '''
+    
+    # Build admin dropdown HTML
+    admin_dropdown = ''
+    if admin_items:
+        admin_dropdown = '''
+        <li class="nav-item dropdown mx-1">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                <i class="fas fa-shield-alt me-2"></i>Admin
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end">
+                ''' + ''.join(admin_items) + '''
+            </ul>
+        </li>
+        '''
+    
+    return '''
+    <nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom py-2 fixed-top" style="z-index: 1030;">
+        <div class="container-fluid px-3">
+            <!-- Brand Logo -->
+            <a class="navbar-brand d-flex align-items-center" href="/dashboard">
+                <div class="brand-icon me-2">
+                    <i class="fas fa-poll text-primary fs-4"></i>
+                </div>
+                <div class="d-flex flex-column">
+                    <span class="fw-bold text-dark fs-5">FormMaster Pro</span>
+                    ''' + dept_badge + '''
+                </div>
+            </a>
+            
+            <!-- Mobile Menu Button -->
+            <button class="btn btn-outline-secondary d-lg-none ms-auto me-2" type="button" 
+                    data-bs-toggle="offcanvas" data-bs-target="#mobileNav">
+                <i class="fas fa-bars"></i>
+            </button>
+            
+            <!-- Desktop Navigation & Actions (Right Corner) -->
+            <div class="d-none d-lg-flex align-items-center ms-auto">
+                <!-- Main Navigation Links -->
+                <ul class="navbar-nav me-3">
+                    ''' + ''.join([f'<li class="nav-item mx-1">{item}</li>' for item in main_nav_items]) + '''
+                    
+                    <!-- Quick Access Dropdown -->
+                    ''' + quick_access_dropdown + '''
+                    
+                    <!-- Admin Dropdown -->
+                    ''' + admin_dropdown + '''
+                </ul>
+                
+                <!-- Right Corner Items -->
+                <div class="d-flex align-items-center border-left ps-3 ms-3">
+                    <!-- Notifications -->
+                    <div class="dropdown me-3">
+                        <button class="btn btn-light position-relative p-2 rounded-circle border-0" 
+                                type="button" data-bs-toggle="dropdown"
+                                aria-label="Notifications">
+                            <i class="fas fa-bell"></i>
+                            ''' + notification_badge + '''
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end p-0" style="width: 350px;">
+                            <div class="dropdown-header bg-light py-3">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <h6 class="mb-0 fw-bold">Notifications</h6>
+                                    <a href="/notifications" class="text-decoration-none small">
+                                        View All <i class="fas fa-external-link-alt ms-1"></i>
+                                    </a>
+                                </div>
+                            </div>
+                            <div class="notification-container" style="max-height: 400px; overflow-y: auto;">
+                                <div id="notification-list">
+                                    <div class="text-center py-4">
+                                        <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                        <span class="ms-2 text-muted">Loading notifications...</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="dropdown-footer bg-light py-2 border-top">
+                                <div class="text-center">
+                                    <button class="btn btn-sm btn-link text-decoration-none" onclick="markAllAsRead()">
+                                        <i class="fas fa-check-circle me-1"></i> Mark all as read
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- User Profile -->
+                    <div class="dropdown">
+                        <button class="btn p-0 border-0 bg-transparent d-flex align-items-center" type="button" 
+                                data-bs-toggle="dropdown" aria-expanded="false">
+                            <div class="profile-avatar">
+                                <div class="rounded-circle d-flex align-items-center justify-content-center"
+                                     style="width: 40px; height: 40px; background: ''' + badge_color + '''; color: white; font-weight: bold; font-size: 14px;">
+                                    ''' + initials + '''
+                                </div>
+                            </div>
+                            <i class="fas fa-chevron-down text-muted ms-2"></i>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end p-2" style="min-width: 250px;">
+                            <li class="dropdown-header">
+                                <div class="d-flex align-items-center">
+                                    <div class="rounded-circle d-flex align-items-center justify-content-center me-2"
+                                         style="width: 36px; height: 36px; background: ''' + badge_color + '''; color: white; font-weight: bold;">
+                                        ''' + initials + '''
+                                    </div>
+                                    <div>
+                                        <div class="fw-bold">''' + user_name + '''</div>
+                                        <small class="text-muted">''' + session.get('email', '') + '''</small>
+                                    </div>
+                                </div>
+                            </li>
+                            <li><hr class="dropdown-divider my-2"></li>
+                            
+                            <li><a class="dropdown-item py-2" href="/profile">
+                                <i class="fas fa-user me-2 text-primary"></i>My Profile
+                            </a></li>
+                            <li><a class="dropdown-item py-2" href="/settings">
+                                <i class="fas fa-cog me-2 text-secondary"></i>Settings
+                            </a></li>
+                            <li><a class="dropdown-item py-2" href="/notifications">
+                                <i class="fas fa-bell me-2 text-warning"></i>Notifications
+                                ''' + (f'<span class="badge bg-danger float-end mt-1">{unread_count}</span>' if unread_count > 0 else '') + '''
+                            </a></li>
+                            
+                            <li><hr class="dropdown-divider my-2"></li>
+                            
+                            <li>
+                                <a class="dropdown-item py-2 text-danger" href="/logout">
+                                    <i class="fas fa-sign-out-alt me-2"></i>Logout
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+    
+    ''' + mobile_nav + '''
+    
+    <!-- Spacer to prevent content from hiding behind fixed navbar -->
+    <div style="height: 70px;"></div>
+    
+    <style>
+        /* Fix navbar to top with no spacing */
+        body {
+            padding-top: 0 !important;
+            margin-top: 0 !important;
+        }
+        
+        .navbar.fixed-top {
+            top: 0;
+            left: 0;
+            right: 0;
+            margin: 0;
+            padding: 0;
+        }
+        
+        /* Right corner items styling */
+        .border-left {
+            border-left: 1px solid #dee2e6 !important;
+        }
+        
+        /* Custom scrollbar for notifications */
+        .notification-container {
+            scrollbar-width: thin;
+            scrollbar-color: #dee2e6 transparent;
+        }
+        
+        .notification-container::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .notification-container::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        .notification-container::-webkit-scrollbar-thumb {
+            background-color: #dee2e6;
+            border-radius: 3px;
+        }
+        
+        /* Nav link hover effects */
+        .nav-link {
+            font-weight: 500;
+            padding: 0.5rem 1rem !important;
+            border-radius: 6px;
+            transition: all 0.2s;
+            color: #495057 !important;
+        }
+        
+        .nav-link:hover {
+            background-color: rgba(0, 123, 255, 0.1);
+            color: #0d6efd !important;
+            transform: translateY(-1px);
+        }
+        
+        .nav-link.active {
+            background-color: rgba(0, 123, 255, 0.15);
+            color: #0d6efd !important;
+            font-weight: 600;
+        }
+        
+        /* Profile dropdown animation */
+        .dropdown-menu {
+            animation: fadeIn 0.2s ease-in-out;
+        }
+        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* Mobile offcanvas styles */
+        .offcanvas {
+            width: 300px !important;
+        }
+        
+        .list-group-item {
+            border-left: 3px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .list-group-item:hover {
+            border-left-color: #0d6efd;
+            background-color: #f8f9fa;
+        }
+        
+        .text-purple {
+            color: #6f42c1 !important;
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 992px) {
+            .container-fluid {
+                padding-left: 15px !important;
+                padding-right: 15px !important;
+            }
+            
+            .navbar-brand {
+                font-size: 1.1rem !important;
+            }
+            
+            .border-left {
+                border-left: none !important;
+                padding-left: 0 !important;
+                margin-left: 0 !important;
+            }
+        }
+        
+        @media (max-width: 576px) {
+            .navbar-brand {
+                font-size: 1rem !important;
+            }
+            
+            .offcanvas {
+                width: 280px !important;
+            }
+        }
+        
+        /* Desktop specific */
+        @media (min-width: 992px) {
+            .navbar-nav {
+                align-items: center;
+            }
+            
+            .profile-avatar {
+                transition: transform 0.2s;
+            }
+            
+            .profile-avatar:hover {
+                transform: scale(1.05);
+            }
+            
+            .btn-light.rounded-circle:hover {
+                background-color: #e9ecef !important;
+                box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+            }
+        }
+    </style>
+    
+    <script>
+        $(document).ready(function() {
+            loadNotifications();
+            setInterval(loadNotifications, 30000);
+            
+            // Highlight active link
+            const currentPath = window.location.pathname;
+            $('.nav-link').each(function() {
+                if ($(this).attr('href') === currentPath) {
+                    $(this).addClass('active');
+                }
+            });
+            
+            // Update notification badge on page load
+            updateNotificationBadge(''' + str(unread_count) + ''');
+            
+            // Add hover effect to profile avatar
+            $('.profile-avatar').hover(
+                function() {
+                    $(this).css('transform', 'scale(1.05)');
+                },
+                function() {
+                    $(this).css('transform', 'scale(1)');
+                }
+            );
+        });
+        
+        function loadNotifications() {
+            $.ajax({
+                url: '/api/notifications/recent',
+                type: 'GET',
+                success: function(response) {
+                    if (response.success) {
+                        $('#notification-list').html(response.html);
+                        updateNotificationBadge(response.unread_count);
+                    }
+                },
+                error: function() {
+                    $('#notification-list').html(
+                        '<div class="text-center py-4 text-danger">' +
+                        '<i class="fas fa-exclamation-triangle me-2"></i>' +
+                        'Error loading notifications' +
+                        '</div>'
+                    );
+                }
+            });
+        }
+        
+        function updateNotificationBadge(count) {
+            // Update notification bell badge
+            if (count > 0) {
+                $('.fa-bell').parent().find('.badge').remove();
+                $('.fa-bell').parent().append(
+                    '<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">' + count + '</span>'
+                );
+            } else {
+                $('.fa-bell').parent().find('.badge').remove();
+            }
+            
+            // Update badge in dropdown menu
+            const badge = $('.notification-count-badge');
+            if (count > 0) {
+                badge.text(count).removeClass('d-none');
+            } else {
+                badge.addClass('d-none');
+            }
+        }
+        
+        function markAsRead(notificationId) {
+            $.ajax({
+                url: '/api/notifications/' + notificationId + '/read',
+                type: 'POST',
+                success: function(response) {
+                    if (response.success) {
+                        loadNotifications();
+                        showToast('Notification marked as read', 'success');
+                    }
+                }
+            });
+        }
+        
+        function markAllAsRead() {
+            $.ajax({
+                url: '/api/notifications/mark-all-read',
+                type: 'POST',
+                success: function(response) {
+                    if (response.success) {
+                        loadNotifications();
+                        showToast('All notifications marked as read', 'success');
+                    }
+                }
+            });
+        }
+        
+        function showToast(message, type) {
+            const toast = $(
+                '<div class="toast align-items-center text-bg-' + type + ' border-0 position-fixed bottom-0 end-0 m-3" role="alert">' +
+                    '<div class="d-flex">' +
+                        '<div class="toast-body">' +
+                            message +
+                        '</div>' +
+                        '<button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>' +
+                    '</div>' +
+                '</div>'
+            );
+            $('body').append(toast);
+            const bsToast = new bootstrap.Toast(toast[0]);
+            bsToast.show();
+            toast.on('hidden.bs.toast', function() {
+                $(this).remove();
+            });
+        }
+    </script>
+    '''
+
+@app.route('/profile')
+@login_required
+def myprofile():
+    """User profile page"""
+    try:
+        user_id = session['user_id']
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get user data
+            cursor.execute("""
+                SELECT u.*, 
+                       COUNT(DISTINCT f.id) as forms_created,
+                       COUNT(DISTINCT r.id) as submissions_made,
+                       COUNT(DISTINCT a.id) as assignments_received
+                FROM users u
+                LEFT JOIN forms f ON f.created_by = u.id
+                LEFT JOIN responses r ON r.student_id = u.id
+                LEFT JOIN assignments a ON a.student_id = u.id
+                WHERE u.id = %s
+                GROUP BY u.id
+            """, (user_id,))
+            user = cursor.fetchone()
+            
+            # Get recent activity
+            cursor.execute("""
+                (SELECT 'form_created' as type, f.title, f.created_at as date, NULL as status, f.id as item_id
+                 FROM forms f 
+                 WHERE f.created_by = %s 
+                 ORDER BY f.created_at DESC LIMIT 5)
+                UNION ALL
+                (SELECT 'response_submitted' as type, f.title, r.submitted_at as date, 
+                        CASE WHEN r.percentage >= 70 THEN 'passed' ELSE 'failed' END as status, 
+                        r.id as item_id
+                 FROM responses r 
+                 JOIN forms f ON r.form_id = f.id 
+                 WHERE r.student_id = %s 
+                 ORDER BY r.submitted_at DESC LIMIT 5)
+                ORDER BY date DESC LIMIT 10
+            """, (user_id, user_id))
+            recent_activity = cursor.fetchall()
+            
+            # Get user statistics based on role
+            if session['role'] in ['teacher', 'admin', 'super_admin']:
+                cursor.execute("""
+                    SELECT 
+                        COUNT(DISTINCT f.id) as total_forms,
+                        SUM(CASE WHEN f.is_published = TRUE THEN 1 ELSE 0 END) as published_forms,
+                        COUNT(DISTINCT r.id) as total_responses,
+                        AVG(r.percentage) as avg_score
+                    FROM forms f
+                    LEFT JOIN responses r ON f.id = r.form_id
+                    WHERE f.created_by = %s
+                """, (user_id,))
+                stats = cursor.fetchone()
+            else:  # Student
+                cursor.execute("""
+                    SELECT 
+                        COUNT(DISTINCT r.form_id) as forms_taken,
+                        COUNT(DISTINCT r.id) as submissions_made,
+                        AVG(r.percentage) as avg_score,
+                        SUM(CASE WHEN r.percentage >= 70 THEN 1 ELSE 0 END) as passed_forms,
+                        SUM(CASE WHEN r.percentage < 70 THEN 1 ELSE 0 END) as failed_forms
+                    FROM responses r
+                    WHERE r.student_id = %s
+                """, (user_id,))
+                stats = cursor.fetchone()
+        
+        connection.close()
+        
+        # Format statistics
+        if stats:
+            for key in stats:
+                if isinstance(stats[key], Decimal):
+                    stats[key] = float(stats[key])
+        
+        # Generate HTML content
+        profile_html = f'''
+        <div class="row">
+            <div class="col-md-4">
+                <div class="card mb-4">
+                    <div class="card-body text-center">
+                        <div class="rounded-circle bg-primary d-inline-flex align-items-center justify-content-center" 
+                             style="width: 120px; height: 120px; margin-bottom: 20px;">
+                            <span class="text-white fw-bold" style="font-size: 48px;">
+                                {user['name'][0].upper() if user['name'] else 'U'}
+                            </span>
+                        </div>
+                        <h4>{user['name']}</h4>
+                        <p class="text-muted">{user['email']}</p>
+                        
+                        <div class="d-flex justify-content-center mb-3">
+                            <span class="badge {'badge-super-admin' if session['role'] == 'super_admin' else 'bg-danger' if session['role'] == 'admin' else 'bg-warning' if session['role'] == 'teacher' else 'student-stats-card'} me-2">
+                                {session['role'].upper().replace('_', ' ')}
+                            </span>
+                            <span class="badge bg-dark">{user['department']}</span>
+                        </div>
+                        
+                        <p class="text-muted">
+                            <small>Member since: {user['created_at'].strftime('%B %d, %Y')}</small>
+                        </p>
+                        
+                        <div class="mt-3">
+                            <button onclick="editProfile()" class="btn btn-outline-primary w-100 mb-2">
+                                <i class="fas fa-edit me-2"></i>Edit Profile
+                            </button>
+                            <button onclick="changePassword()" class="btn btn-outline-secondary w-100">
+                                <i class="fas fa-key me-2"></i>Change Password
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Statistics</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row text-center">
+        '''
+        
+        if session['role'] in ['teacher', 'admin', 'super_admin']:
+            profile_html += f'''
+                            <div class="col-6 mb-3">
+                                <h6>Forms Created</h6>
+                                <h4>{stats.get('total_forms', 0) or 0}</h4>
+                                <small class="text-muted">Published: {stats.get('published_forms', 0)}</small>
+                            </div>
+                            <div class="col-6 mb-3">
+                                <h6>Total Responses</h6>
+                                <h4>{stats.get('total_responses', 0) or 0}</h4>
+                                <small class="text-muted">Avg Score: {stats.get('avg_score', 0) or 0:.1f}%</small>
+                            </div>
+            '''
+        else:
+            profile_html += f'''
+                            <div class="col-6 mb-3">
+                                <h6>Forms Taken</h6>
+                                <h4>{stats.get('forms_taken', 0) or 0}</h4>
+                                <small class="text-muted">Submissions: {stats.get('submissions_made', 0)}</small>
+                            </div>
+                            <div class="col-6 mb-3">
+                                <h6>Average Score</h6>
+                                <h4>{stats.get('avg_score', 0) or 0:.1f}%</h4>
+                                <small class="text-muted">Passed: {stats.get('passed_forms', 0)}</small>
+                            </div>
+            '''
+        
+        profile_html += f'''
+                            <div class="col-6">
+                                <h6>User ID</h6>
+                                <h6 class="text-muted">{user['id']}</h6>
+                            </div>
+                            <div class="col-6">
+                                <h6>Department</h6>
+                                <h6 class="text-muted">{user['department']}</h6>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-8">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">Recent Activity</h5>
+                    </div>
+                    <div class="card-body">
+        '''
+        
+        if recent_activity:
+            profile_html += '''
+                        <div class="timeline">
+            '''
+            
+            for activity in recent_activity:
+                icon = {
+                    'form_created': 'fa-file-alt text-primary',
+                    'response_submitted': 'fa-paper-plane text-success'
+                }.get(activity['type'], 'fa-info-circle')
+                
+                time_ago = get_time_ago(activity['date'])
+                
+                profile_html += f'''
+                            <div class="d-flex mb-3">
+                                <div class="flex-shrink-0">
+                                    <i class="fas {icon} fa-lg"></i>
+                                </div>
+                                <div class="flex-grow-1 ms-3">
+                                    <h6 class="mb-1">{activity['title']}</h6>
+                                    <p class="mb-1 text-muted">
+                                        {activity['type'].replace('_', ' ').title()}
+                                        {f'- <span class="badge bg-{"success" if activity["status"] == "passed" else "danger"}">{activity["status"].upper()}</span>' if activity['status'] else ''}
+                                    </p>
+                                    <small class="text-muted">{time_ago}</small>
+                                </div>
+                            </div>
+                '''
+            
+            profile_html += '''
+                        </div>
+            '''
+        else:
+            profile_html += '''
+                        <div class="text-center py-4">
+                            <i class="fas fa-history fa-3x text-muted mb-3"></i>
+                            <p class="text-muted">No recent activity</p>
+                        </div>
+            '''
+        
+        profile_html += f'''
+                    </div>
+                </div>
+                
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">Account Information</h5>
+                            </div>
+                            <div class="card-body">
+                                <table class="table table-sm">
+                                    <tbody>
+                                        <tr>
+                                            <th>Full Name:</th>
+                                            <td>{user['name']}</td>
+                                        </tr>
+                                        <tr>
+                                            <th>Email:</th>
+                                            <td>{user['email']}</td>
+                                        </tr>
+                                        <tr>
+                                            <th>Role:</th>
+                                            <td><span class="badge {'badge-super-admin' if session['role'] == 'super_admin' else 'bg-danger' if session['role'] == 'admin' else 'bg-warning' if session['role'] == 'teacher' else 'student-stats-card'}">
+                                                {session['role'].upper().replace('_', ' ')}
+                                            </span></td>
+                                        </tr>
+                                        <tr>
+                                            <th>Department:</th>
+                                            <td>{user['department']}</td>
+                                        </tr>
+                                        <tr>
+                                            <th>Account Created:</th>
+                                            <td>{user['created_at'].strftime('%B %d, %Y')}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">Quick Actions</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="d-grid gap-2">
+        '''
+        
+        if session['role'] in ['teacher', 'admin', 'super_admin']:
+            profile_html += '''
+                                    <a href="/create-form" class="btn btn-outline-primary">
+                                        <i class="fas fa-plus me-2"></i>Create New Form
+                                    </a>
+                                    <a href="/form-requests" class="btn btn-outline-warning">
+                                        <i class="fas fa-clock me-2"></i>View Pending Requests
+                                    </a>
+                                    <a href="/review-forms" class="btn btn-outline-info">
+                                        <i class="fas fa-check-circle me-2"></i>Review Forms
+                                    </a>
+            '''
+        else:
+            profile_html += '''
+                                    <a href="/create-student-form" class="btn btn-outline-success">
+                                        <i class="fas fa-plus-circle me-2"></i>Create Student Form
+                                    </a>
+                                    <a href="/my-submissions" class="btn btn-outline-primary">
+                                        <i class="fas fa-history me-2"></i>My Submissions
+                                    </a>
+                                    <a href="/my-responses" class="btn btn-outline-info">
+                                        <i class="fas fa-chart-bar me-2"></i>My Results
+                                    </a>
+            '''
+        
+        profile_html += '''
+                                    <a href="/settings" class="btn btn-outline-secondary">
+                                        <i class="fas fa-cog me-2"></i>Account Settings
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            function editProfile() {
+                // Show edit profile modal
+                alert('Edit profile feature coming soon!');
+            }
+            
+            function changePassword() {
+                // Redirect to password change
+                window.location.href = '/settings#security';
+            }
+        </script>
+        
+        <style>
+            .timeline {
+                position: relative;
+                padding-left: 30px;
+            }
+            
+            .timeline::before {
+                content: '';
+                position: absolute;
+                left: 15px;
+                top: 0;
+                bottom: 0;
+                width: 2px;
+                background-color: #e9ecef;
+            }
+            
+            .timeline .d-flex .flex-shrink-0 {
+                position: relative;
+                z-index: 1;
+            }
+            
+            .rounded-circle.bg-primary {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            }
+        </style>
+        '''
+        
+        return html_wrapper('My Profile', profile_html, get_navbar(), '')
+        
+    except Exception as e:
+        print(f"Profile page error: {e}")
+        traceback.print_exc()
+        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+
+# API endpoint to update profile picture
+@app.route('/api/profile/upload-picture', methods=['POST'])
+def upload_profile_picture():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Not logged in'})
+    
+    user_id = session['user_id']
+    
+    if 'profile_picture' not in request.files:
+        return jsonify({'success': False, 'message': 'No file uploaded'})
+    
+    file = request.files['profile_picture']
+    
+    if file.filename == '':
+        return jsonify({'success': False, 'message': 'No file selected'})
+    
+    if file and allowed_file(file.filename):
+        # Generate unique filename
+        filename = secure_filename(f"profile_{user_id}_{datetime.now().timestamp()}.{file.filename.rsplit('.', 1)[1].lower()}")
+        
+        # Create uploads directory if it doesn't exist
+        upload_folder = 'static/uploads/profile_pictures'
+        os.makedirs(upload_folder, exist_ok=True)
+        
+        # Save file
+        file_path = os.path.join(upload_folder, filename)
+        file.save(file_path)
+        
+        # Update database with relative path
+        relative_path = f"uploads/profile_pictures/{filename}"
+        
+        try:
+            cursor = mysql.connection.cursor()
+            cursor.execute("UPDATE users SET profile_picture = %s WHERE id = %s", (relative_path, user_id))
+            mysql.connection.commit()
+            cursor.close()
+            
+            return jsonify({
+                'success': True, 
+                'message': 'Profile picture updated',
+                'image_url': f"/static/{relative_path}"
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'message': str(e)})
+    
+    return jsonify({'success': False, 'message': 'Invalid file type'})
+
+# Helper function for file upload
+def allowed_file(filename):
+    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# API endpoint to get user stats
+@app.route('/api/profile/stats')
+def get_user_stats():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Not logged in'})
+    
+    user_id = session['user_id']
+    
+    cursor = mysql.connection.cursor()
+    
+    if session['role'] in ['teacher', 'admin', 'super_admin']:
+        cursor.execute("""
+            SELECT 
+                MONTH(created_at) as month,
+                COUNT(*) as forms_created
+            FROM forms 
+            WHERE created_by = %s AND YEAR(created_at) = YEAR(CURDATE())
+            GROUP BY MONTH(created_at)
+            ORDER BY month
+        """, (user_id,))
+        monthly_stats = cursor.fetchall()
+        
+        cursor.execute("""
+            SELECT 
+                f.title,
+                COUNT(s.id) as submission_count
+            FROM forms f
+            LEFT JOIN submissions s ON f.id = s.form_id
+            WHERE f.created_by = %s
+            GROUP BY f.id
+            ORDER BY submission_count DESC
+            LIMIT 5
+        """, (user_id,))
+        top_forms = cursor.fetchall()
+    else:
+        cursor.execute("""
+            SELECT 
+                MONTH(submitted_at) as month,
+                COUNT(*) as submissions_made
+            FROM submissions 
+            WHERE user_id = %s AND YEAR(submitted_at) = YEAR(CURDATE())
+            GROUP BY MONTH(submitted_at)
+            ORDER BY month
+        """, (user_id,))
+        monthly_stats = cursor.fetchall()
+        
+        cursor.execute("""
+            SELECT 
+                f.title,
+                s.status
+            FROM submissions s
+            JOIN forms f ON s.form_id = f.id
+            WHERE s.user_id = %s
+            ORDER BY s.submitted_at DESC
+            LIMIT 5
+        """, (user_id,))
+        recent_submissions = cursor.fetchall()
+    
+    cursor.close()
+    
+    return jsonify({
+        'success': True,
+        'monthly_stats': monthly_stats,
+        'top_forms': top_forms if session['role'] in ['teacher', 'admin', 'super_admin'] else [],
+        'recent_submissions': recent_submissions if session['role'] == 'student' else []
+    })
+
+@app.route('/settings')
+def settings():
+    if 'user_id' not in session:
+        return redirect('/login')
+    
+    user_id = session['user_id']
+    
+    # Get user data from database - FIXED
+    connection = get_db()
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+    connection.close()
+    
+    # Rest of the settings HTML code remains the same...
+    
+    # Get active sessions (simplified version)
+    active_sessions = [
+        {
+            'device': 'Chrome on Windows',
+            'location': 'Chennai, India',
+            'ip': '192.168.1.100',
+            'last_active': 'Just now',
+            'current': True
+        },
+        {
+            'device': 'Safari on iPhone',
+            'location': 'Chennai, India',
+            'ip': '192.168.1.101',
+            'last_active': '2 hours ago',
+            'current': False
+        }
+    ]
+    
+    # Inline HTML template for settings
+    settings_html = '''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Settings - FormMaster Pro</title>
+        
+        <!-- Bootstrap 5 CSS -->
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <!-- Font Awesome -->
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <style>
+            :root {
+                --primary-color: #4e73df;
+                --success-color: #1cc88a;
+                --warning-color: #f6c23e;
+                --danger-color: #e74a3b;
+                --dark-color: #5a5c69;
+            }
+            
+            .settings-container {
+                max-width: 1200px;
+                margin: 0 auto;
+            }
+            
+            .settings-sidebar {
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
+                position: sticky;
+                top: 100px;
+            }
+            
+            .settings-content {
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
+            }
+            
+            .nav-link.active {
+                background-color: var(--primary-color);
+                color: white !important;
+                border-radius: 8px;
+            }
+            
+            .nav-link {
+                color: #6e707e;
+                font-weight: 500;
+                padding: 12px 20px;
+                margin: 5px 0;
+                transition: all 0.3s;
+            }
+            
+            .nav-link:hover {
+                background-color: rgba(78, 115, 223, 0.1);
+                color: var(--primary-color);
+                border-radius: 8px;
+            }
+            
+            .settings-card {
+                border: none;
+                border-radius: 10px;
+                box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+                transition: transform 0.3s;
+            }
+            
+            .settings-card:hover {
+                transform: translateY(-2px);
+            }
+            
+            .form-control:focus {
+                border-color: var(--primary-color);
+                box-shadow: 0 0 0 0.2rem rgba(78, 115, 223, 0.25);
+            }
+            
+            .btn-primary {
+                background-color: var(--primary-color);
+                border-color: var(--primary-color);
+                padding: 10px 25px;
+                font-weight: 600;
+            }
+            
+            .btn-primary:hover {
+                background-color: #2e59d9;
+                border-color: #2e59d9;
+            }
+            
+            .settings-header {
+                border-bottom: 1px solid #e3e6f0;
+                padding-bottom: 15px;
+                margin-bottom: 30px;
+            }
+            
+            .settings-icon {
+                width: 50px;
+                height: 50px;
+                border-radius: 10px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin-right: 15px;
+            }
+            
+            .icon-profile {
+                background: linear-gradient(135deg, #4e73df, #2e59d9);
+                color: white;
+            }
+            
+            .icon-security {
+                background: linear-gradient(135deg, #1cc88a, #13855c);
+                color: white;
+            }
+            
+            .icon-notifications {
+                background: linear-gradient(135deg, #f6c23e, #dda20a);
+                color: white;
+            }
+            
+            .icon-privacy {
+                background: linear-gradient(135deg, #e74a3b, #be2617);
+                color: white;
+            }
+            
+            .toggle-switch {
+                position: relative;
+                display: inline-block;
+                width: 60px;
+                height: 30px;
+            }
+            
+            .toggle-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            
+            .toggle-slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: #ccc;
+                transition: .4s;
+                border-radius: 34px;
+            }
+            
+            .toggle-slider:before {
+                position: absolute;
+                content: "";
+                height: 22px;
+                width: 22px;
+                left: 4px;
+                bottom: 4px;
+                background-color: white;
+                transition: .4s;
+                border-radius: 50%;
+            }
+            
+            input:checked + .toggle-slider {
+                background-color: var(--success-color);
+            }
+            
+            input:checked + .toggle-slider:before {
+                transform: translateX(30px);
+            }
+            
+            .password-strength {
+                height: 5px;
+                border-radius: 2px;
+                margin-top: 5px;
+                transition: all 0.3s;
+            }
+            
+            .strength-weak { background-color: var(--danger-color); width: 25%; }
+            .strength-fair { background-color: var(--warning-color); width: 50%; }
+            .strength-good { background-color: #17a2b8; width: 75%; }
+            .strength-strong { background-color: var(--success-color); width: 100%; }
+            
+            .session-card {
+                border-left: 4px solid var(--primary-color);
+                transition: all 0.3s;
+            }
+            
+            .session-card:hover {
+                transform: translateX(5px);
+            }
+            
+            .current-session {
+                border-left-color: var(--success-color);
+            }
+        </style>
+    </head>
+    <body>
+        ''' + get_navbar() + '''
+        
+        <div class="container py-4 settings-container">
+            <div class="row">
+                <!-- Sidebar -->
+                <div class="col-lg-3 mb-4">
+                    <div class="settings-sidebar p-4">
+                        <h4 class="mb-4"><i class="fas fa-cog me-2"></i>Settings</h4>
+                        <div class="nav flex-column nav-pills" id="settingsTab" role="tablist">
+                            <a class="nav-link active" id="profile-tab" data-bs-toggle="pill" href="#profile">
+                                <i class="fas fa-user me-2"></i>Profile
+                            </a>
+                            <a class="nav-link" id="security-tab" data-bs-toggle="pill" href="#security">
+                                <i class="fas fa-shield-alt me-2"></i>Security
+                            </a>
+                            <a class="nav-link" id="notifications-tab" data-bs-toggle="pill" href="#notifications">
+                                <i class="fas fa-bell me-2"></i>Notifications
+                            </a>
+                            <a class="nav-link" id="privacy-tab" data-bs-toggle="pill" href="#privacy">
+                                <i class="fas fa-lock me-2"></i>Privacy
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Content -->
+                <div class="col-lg-9">
+                    <div class="settings-content p-4">
+                        <div class="tab-content" id="settingsTabContent">
+                            <!-- Profile Tab -->
+                            <div class="tab-pane fade show active" id="profile">
+                                <div class="settings-header">
+                                    <div class="d-flex align-items-center">
+                                        <div class="settings-icon icon-profile">
+                                            <i class="fas fa-user fa-lg"></i>
+                                        </div>
+                                        <div>
+                                            <h4 class="mb-1">Profile Settings</h4>
+                                            <p class="text-muted mb-0">Update your personal information</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <form id="profileForm">
+                                    <div class="row mb-4">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Full Name</label>
+                                            <input type="text" class="form-control" name="name" 
+                                                   value="''' + (user['name'] if user else '') + '''" required>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Email Address</label>
+                                            <input type="email" class="form-control" name="email" 
+                                                   value="''' + (user['email'] if user else '') + '''" required>
+                                        </div>
+                                        # In the settings HTML, change the phone input section to:
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Phone Number</label>
+                                            <input type="tel" class="form-control" name="phone" 
+                                                value="">
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Department</label>
+                                            <input type="text" class="form-control" name="department" 
+                                                   value="''' + (user['department'] if user and user['department'] else '') + '''">
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Role</label>
+                                            <input type="text" class="form-control" value="''' + session.get('role', '').title() + '''" readonly>
+                                        </div>
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">User ID</label>
+                                            <input type="text" class="form-control" value="''' + (str(user['id']) if user else '') + '''" readonly>
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="fas fa-save me-2"></i>Save Changes
+                                    </button>
+                                </form>
+                            </div>
+                            
+                            <!-- Security Tab -->
+                            <div class="tab-pane fade" id="security">
+                                <div class="settings-header">
+                                    <div class="d-flex align-items-center">
+                                        <div class="settings-icon icon-security">
+                                            <i class="fas fa-shield-alt fa-lg"></i>
+                                        </div>
+                                        <div>
+                                            <h4 class="mb-1">Security Settings</h4>
+                                            <p class="text-muted mb-0">Manage your password and security</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Change Password -->
+                                <div class="card settings-card mb-4">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Change Password</h5>
+                                        <form id="passwordForm">
+                                            <div class="mb-3">
+                                                <label class="form-label">Current Password</label>
+                                                <input type="password" class="form-control" name="current_password" required>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label">New Password</label>
+                                                <input type="password" class="form-control" name="new_password" id="newPassword" required>
+                                                <div class="password-strength" id="passwordStrength"></div>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label">Confirm New Password</label>
+                                                <input type="password" class="form-control" name="confirm_password" required>
+                                            </div>
+                                            <button type="submit" class="btn btn-primary">
+                                                <i class="fas fa-key me-2"></i>Change Password
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                
+                                <!-- Active Sessions -->
+                                <div class="card settings-card">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Active Sessions</h5>
+                                        <p class="text-muted">Manage your active login sessions</p>
+                                        
+                                        <div class="list-group">
+    '''
+    
+    # Add active sessions
+    for i, sess in enumerate(active_sessions):
+        current_session_class = 'current-session' if sess['current'] else ''
+        current_badge = '<span class="badge bg-success ms-2">Current Session</span>' if sess['current'] else ''
+        terminate_button = ''
+        if not sess['current']:
+            terminate_button = f'''
+                                                    <button class="btn btn-sm btn-outline-danger terminate-session" 
+                                                            data-session-id="{i}">
+                                                        <i class="fas fa-sign-out-alt"></i> Terminate
+                                                    </button>'''
+        
+        settings_html += f'''
+                                            <div class="list-group-item border-0 px-0 py-3 session-card {current_session_class}">
+                                                <div class="d-flex justify-content-between align-items-center">
+                                                    <div>
+                                                        <h6 class="mb-1">{sess['device']}</h6>
+                                                        <small class="text-muted">
+                                                            <i class="fas fa-map-marker-alt me-1"></i>{sess['location']}
+                                                            <i class="fas fa-network-wired ms-3 me-1"></i>{sess['ip']}
+                                                        </small>
+                                                        <div class="mt-1">
+                                                            <small class="text-muted">
+                                                                <i class="far fa-clock me-1"></i>Last active: {sess['last_active']}
+                                                            </small>
+                                                            {current_badge}
+                                                        </div>
+                                                    </div>
+                                                    {terminate_button}
+                                                </div>
+                                            </div>'''
+    
+    settings_html += '''
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Notifications Tab -->
+                            <div class="tab-pane fade" id="notifications">
+                                <div class="settings-header">
+                                    <div class="d-flex align-items-center">
+                                        <div class="settings-icon icon-notifications">
+                                            <i class="fas fa-bell fa-lg"></i>
+                                        </div>
+                                        <div>
+                                            <h4 class="mb-1">Notification Settings</h4>
+                                            <p class="text-muted mb-0">Configure how you receive notifications</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <form id="notificationForm">
+                                    <div class="card settings-card mb-3">
+                                        <div class="card-body">
+                                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                                <div>
+                                                    <h6 class="mb-1">Email Notifications</h6>
+                                                    <p class="text-muted mb-0">Receive notifications via email</p>
+                                                </div>
+                                                <label class="toggle-switch">
+                                                    <input type="checkbox" name="email_notifications" checked>
+                                                    <span class="toggle-slider"></span>
+                                                </label>
+                                            </div>
+                                            
+                                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                                <div>
+                                                    <h6 class="mb-1">Push Notifications</h6>
+                                                    <p class="text-muted mb-0">Receive browser notifications</p>
+                                                </div>
+                                                <label class="toggle-switch">
+                                                    <input type="checkbox" name="push_notifications" checked>
+                                                    <span class="toggle-slider"></span>
+                                                </label>
+                                            </div>
+                                            
+                                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                                <div>
+                                                    <h6 class="mb-1">Form Updates</h6>
+                                                    <p class="text-muted mb-0">Notify when forms are updated</p>
+                                                </div>
+                                                <label class="toggle-switch">
+                                                    <input type="checkbox" name="form_updates" checked>
+                                                    <span class="toggle-slider"></span>
+                                                </label>
+                                            </div>
+                                            
+                                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                                <div>
+                                                    <h6 class="mb-1">Deadline Alerts</h6>
+                                                    <p class="text-muted mb-0">Alert before form deadlines</p>
+                                                </div>
+                                                <label class="toggle-switch">
+                                                    <input type="checkbox" name="deadline_alerts" checked>
+                                                    <span class="toggle-slider"></span>
+                                                </label>
+                                            </div>
+                                            
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <div>
+                                                    <h6 class="mb-1">Weekly Digest</h6>
+                                                    <p class="text-muted mb-0">Receive weekly summary emails</p>
+                                                </div>
+                                                <label class="toggle-switch">
+                                                    <input type="checkbox" name="weekly_digest">
+                                                    <span class="toggle-slider"></span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="fas fa-save me-2"></i>Save Preferences
+                                    </button>
+                                </form>
+                            </div>
+                            
+                            <!-- Privacy Tab -->
+                            <div class="tab-pane fade" id="privacy">
+                                <div class="settings-header">
+                                    <div class="d-flex align-items-center">
+                                        <div class="settings-icon icon-privacy">
+                                            <i class="fas fa-lock fa-lg"></i>
+                                        </div>
+                                        <div>
+                                            <h4 class="mb-1">Privacy Settings</h4>
+                                            <p class="text-muted mb-0">Control your data and privacy</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="card settings-card mb-4">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Data Privacy</h5>
+                                        <p class="text-muted">Manage how your data is used and stored</p>
+                                        
+                                        <div class="d-flex justify-content-between align-items-center mb-3">
+                                            <div>
+                                                <h6 class="mb-1">Allow Data Collection</h6>
+                                                <p class="text-muted mb-0">Allow anonymous usage data collection</p>
+                                            </div>
+                                            <label class="toggle-switch">
+                                                <input type="checkbox" checked>
+                                                <span class="toggle-slider"></span>
+                                            </label>
+                                        </div>
+                                        
+                                        <div class="d-flex justify-content-between align-items-center mb-3">
+                                            <div>
+                                                <h6 class="mb-1">Show Profile to Others</h6>
+                                                <p class="text-muted mb-0">Allow other users to view your profile</p>
+                                            </div>
+                                            <label class="toggle-switch">
+                                                <input type="checkbox" checked>
+                                                <span class="toggle-slider"></span>
+                                            </label>
+                                        </div>
+                                        
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <h6 class="mb-1">Email Visibility</h6>
+                                                <p class="text-muted mb-0">Show email address to other users</p>
+                                            </div>
+                                            <label class="toggle-switch">
+                                                <input type="checkbox">
+                                                <span class="toggle-slider"></span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="card settings-card border-danger">
+                                    <div class="card-body">
+                                        <h5 class="card-title text-danger">Danger Zone</h5>
+                                        <p class="text-muted">Permanent actions that cannot be undone</p>
+                                        
+                                        <div class="d-grid gap-2 d-md-flex">
+                                            <button class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#deleteAccountModal">
+                                                <i class="fas fa-trash me-2"></i>Delete Account
+                                            </button>
+                                            <button class="btn btn-outline-warning">
+                                                <i class="fas fa-download me-2"></i>Export My Data
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Delete Account Modal -->
+        <div class="modal fade" id="deleteAccountModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title text-danger">Delete Account</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-danger">
+                            <i class="fas fa-exclamation-triangle me-2"></i>
+                            <strong>Warning:</strong> This action cannot be undone. All your data will be permanently deleted.
+                        </div>
+                        <p>To confirm account deletion, please type your password:</p>
+                        <input type="password" class="form-control" id="deletePassword" placeholder="Enter your password">
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-danger" id="confirmDelete">Delete Account</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Bootstrap JS -->
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <!-- jQuery -->
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        
+        <script>
+            $(document).ready(function() {
+                // Profile form submission
+                $('#profileForm').submit(function(e) {
+                    e.preventDefault();
+                    const formData = $(this).serialize();
+                    
+                    $.ajax({
+                        url: '/api/settings/update-profile',
+                        type: 'POST',
+                        data: formData,
+                        success: function(response) {
+                            if (response.success) {
+                                showAlert('Profile updated successfully!', 'success');
+                            } else {
+                                showAlert(response.message, 'error');
+                            }
+                        }
+                    });
+                });
+                
+                // Password form submission
+                $('#passwordForm').submit(function(e) {
+                    e.preventDefault();
+                    
+                    if ($('input[name="new_password"]').val() !== $('input[name="confirm_password"]').val()) {
+                        showAlert('Passwords do not match!', 'error');
+                        return;
+                    }
+                    
+                    const formData = $(this).serialize();
+                    
+                    $.ajax({
+                        url: '/api/settings/change-password',
+                        type: 'POST',
+                        data: formData,
+                        success: function(response) {
+                            if (response.success) {
+                                showAlert('Password changed successfully!', 'success');
+                                $('#passwordForm')[0].reset();
+                            } else {
+                                showAlert(response.message, 'error');
+                            }
+                        }
+                    });
+                });
+                
+                // Password strength indicator
+                $('#newPassword').on('input', function() {
+                    const password = $(this).val();
+                    const strengthBar = $('#passwordStrength');
+                    
+                    if (password.length === 0) {
+                        strengthBar.removeClass().addClass('password-strength');
+                        return;
+                    }
+                    
+                    let strength = 0;
+                    if (password.length >= 8) strength++;
+                    if (/[A-Z]/.test(password)) strength++;
+                    if (/[0-9]/.test(password)) strength++;
+                    if (/[^A-Za-z0-9]/.test(password)) strength++;
+                    
+                    strengthBar.removeClass().addClass('password-strength');
+                    if (strength <= 1) {
+                        strengthBar.addClass('strength-weak');
+                    } else if (strength === 2) {
+                        strengthBar.addClass('strength-fair');
+                    } else if (strength === 3) {
+                        strengthBar.addClass('strength-good');
+                    } else {
+                        strengthBar.addClass('strength-strong');
+                    }
+                });
+                
+                // Notification form submission
+                $('#notificationForm').submit(function(e) {
+                    e.preventDefault();
+                    
+                    const formData = {
+                        email_notifications: $('input[name="email_notifications"]').is(':checked'),
+                        push_notifications: $('input[name="push_notifications"]').is(':checked'),
+                        form_updates: $('input[name="form_updates"]').is(':checked'),
+                        deadline_alerts: $('input[name="deadline_alerts"]').is(':checked'),
+                        weekly_digest: $('input[name="weekly_digest"]').is(':checked')
+                    };
+                    
+                    $.ajax({
+                        url: '/api/settings/update-notifications',
+                        type: 'POST',
+                        data: formData,
+                        success: function(response) {
+                            if (response.success) {
+                                showAlert('Notification preferences updated!', 'success');
+                            } else {
+                                showAlert(response.message, 'error');
+                            }
+                        }
+                    });
+                });
+                
+                // Terminate session
+                $('.terminate-session').click(function() {
+                    const sessionId = $(this).data('session-id');
+                    const button = $(this);
+                    
+                    $.ajax({
+                        url: '/api/settings/terminate-session',
+                        type: 'POST',
+                        data: { session_id: sessionId },
+                        success: function(response) {
+                            if (response.success) {
+                                button.closest('.session-card').fadeOut();
+                                showAlert('Session terminated', 'success');
+                            } else {
+                                showAlert(response.message, 'error');
+                            }
+                        }
+                    });
+                });
+                
+                // Confirm account deletion
+                $('#confirmDelete').click(function() {
+                    const password = $('#deletePassword').val();
+                    if (!password) {
+                        showAlert('Please enter your password', 'error');
+                        return;
+                    }
+                    
+                    if (confirm('Are you absolutely sure? This cannot be undone!')) {
+                        showAlert('Account deletion requested. This feature is disabled in demo.', 'warning');
+                        $('#deleteAccountModal').modal('hide');
+                    }
+                });
+                
+                // Show alert function
+                function showAlert(message, type) {
+                    const alertClass = type === 'success' ? 'alert-success' : 'alert-danger';
+                    const alert = $(
+                        '<div class="alert ' + alertClass + ' alert-dismissible fade show position-fixed top-0 end-0 m-3" role="alert" style="z-index: 1050;">' +
+                            message +
+                            '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>' +
+                        '</div>'
+                    );
+                    
+                    $('body').append(alert);
+                    setTimeout(() => alert.alert('close'), 3000);
+                }
+            });
+        </script>
+    </body>
+    </html>
+    '''
+    
+    return settings_html
+
+
+@app.route('/api/settings/update-profile', methods=['POST'])
+def update_profile():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Not logged in'})
+    
+    user_id = session['user_id']
+    name = request.form.get('name')
+    email = request.form.get('email')
+    phone = request.form.get('phone', '')  # Default to empty string
+    department = request.form.get('department')
+    
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Check if phone column exists
+            cursor.execute("SHOW COLUMNS FROM users LIKE 'phone'")
+            phone_exists = cursor.fetchone()
+            
+            if phone_exists:
+                cursor.execute("""
+                    UPDATE users 
+                    SET name = %s, email = %s, phone = %s, department = %s 
+                    WHERE id = %s
+                """, (name, email, phone, department, user_id))
+            else:
+                cursor.execute("""
+                    UPDATE users 
+                    SET name = %s, email = %s, department = %s 
+                    WHERE id = %s
+                """, (name, email, department, user_id))
+        
+        # Update session data
+        session['name'] = name
+        session['email'] = email
+        session['department'] = department
+        
+        return jsonify({'success': True, 'message': 'Profile updated successfully'})
+    except Exception as e:
+        print(f"Update profile error: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/settings/change-password', methods=['POST'])
+def change_password():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Not logged in'})
+    
+    user_id = session['user_id']
+    current_password = request.form.get('current_password')
+    new_password = request.form.get('new_password')
+    confirm_password = request.form.get('confirm_password')
+    
+    if new_password != confirm_password:
+        return jsonify({'success': False, 'message': 'Passwords do not match'})
+    
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT password FROM users WHERE id = %s", (user_id,))
+            result = cursor.fetchone()
+        
+        if not result:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Verify current password (assuming plain text for demo - use hashing in production)
+        if result['password'] != current_password:
+            return jsonify({'success': False, 'message': 'Current password is incorrect'})
+        
+        # Update password
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE users SET password = %s WHERE id = %s", (new_password, user_id))
+            connection.commit()
+        connection.close()
+        
+        return jsonify({'success': True, 'message': 'Password changed successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/settings/update-notifications', methods=['POST'])
+def update_notification_preferences():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Not logged in'})
+    
+    user_id = session['user_id']
+    email_notifications = request.form.get('email_notifications') == 'true'
+    push_notifications = request.form.get('push_notifications') == 'true'
+    form_updates = request.form.get('form_updates') == 'true'
+    deadline_alerts = request.form.get('deadline_alerts') == 'true'
+    weekly_digest = request.form.get('weekly_digest') == 'true'
+    
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Check if table exists, create if not
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS notification_preferences (
+                    user_id INT PRIMARY KEY,
+                    email_notifications BOOLEAN DEFAULT TRUE,
+                    push_notifications BOOLEAN DEFAULT TRUE,
+                    form_updates BOOLEAN DEFAULT TRUE,
+                    deadline_alerts BOOLEAN DEFAULT TRUE,
+                    weekly_digest BOOLEAN DEFAULT FALSE,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            """)
+            
+            cursor.execute("""
+                INSERT INTO notification_preferences 
+                (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                email_notifications = VALUES(email_notifications),
+                push_notifications = VALUES(push_notifications),
+                form_updates = VALUES(form_updates),
+                deadline_alerts = VALUES(deadline_alerts),
+                weekly_digest = VALUES(weekly_digest)
+            """, (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest))
+            connection.commit()
+        connection.close()
+        
+        return jsonify({'success': True, 'message': 'Notification preferences updated'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/settings/terminate-session', methods=['POST'])
+def terminate_session():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': 'Not logged in'})
+    
+    session_id = request.form.get('session_id')
+    # In a real app, you would invalidate the session token in database
+    return jsonify({'success': True, 'message': 'Session terminated'})
 
 @app.route('/create-form', methods=['GET', 'POST'])
 @login_required
@@ -6200,11 +8936,38 @@ def submit_form():
                 INSERT INTO responses (form_id, student_id, answers, score, total_marks, percentage)
                 VALUES (%s, %s, %s, %s, %s, %s)
             ''', (form_id, session['user_id'], json.dumps(answers), score, total_marks, percentage))
+            response_id = cursor.lastrowid
             
             cursor.execute('''
                 UPDATE assignments SET is_completed = TRUE 
                 WHERE form_id = %s AND student_id = %s
             ''', (form_id, session['user_id']))
+            
+            # Create download entry based on form type
+            if form['form_type'] == 'public':
+                # Public forms: Auto-grant download access
+                download_token, _ = create_response_download_entry(response_id, session['user_id'], form_id)
+                if download_token:
+                    cursor.execute('''
+                        UPDATE response_downloads 
+                        SET access_granted = TRUE,
+                            granted_by = %s,
+                            granted_at = CURRENT_TIMESTAMP
+                        WHERE response_id = %s AND student_id = %s
+                    ''', (session['user_id'], response_id, session['user_id']))
+            else:
+                # Open/Confidential forms: Create pending request
+                download_token, form_details = create_response_download_entry(response_id, session['user_id'], form_id)
+                
+                # Create notification for form creator if different from student
+                if form_details and form_details['creator_id'] != session['user_id']:
+                    create_notification(
+                        user_id=form_details['creator_id'],
+                        title='New Response Download Request',
+                        message=f'{session["name"]} has submitted your form "{form["title"]}" and requested download access.',
+                        type='warning',
+                        link=f'/form/{form_id}/response-downloads'
+                    )
             
             connection.commit()
             
@@ -6227,7 +8990,7 @@ def submit_form():
             title='Form Submitted',
             message=f'You have submitted the form "{form["title"]}". Score: {score}/{total_marks} ({percentage:.1f}%)',
             type='success',
-            link='/my-responses'
+            link=f'/my-responses'
         )
         
         # Create notification for form creator
@@ -6240,37 +9003,987 @@ def submit_form():
                 link=f'/form/{form_id}/responses'
             )
         
-        # Send submission notification email
-        if ENABLE_EMAIL_NOTIFICATIONS and form_details:
-            html_content = f'''
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2 style="color: #667eea;">Form Submission Completed</h2>
-                <p>Hello {form_details['creator_name']},</p>
-                <p>A student has submitted your form.</p>
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                    <p><strong>Form Details:</strong></p>
-                    <p>Title: {form_details['title']}</p>
-                    <p>Student: {form_details['student_name']} ({form_details['student_email']})</p>
-                    <p>Score: {score}/{total_marks} ({percentage:.1f}%)</p>
-                    <p>Submission Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                </div>
-                <p>You can view all responses from the form results page.</p>
-                <a href="http://localhost:5000/form/{form_id}/responses" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">View Results</a>
-                <hr>
-                <p style="color: #666; font-size: 12px;">This is an automated message from FormMaster Pro.</p>
-            </div>
-            '''
-            send_email(form_details['creator_email'], 'Form Submission - FormMaster Pro', html_content)
-        
         return jsonify({
             'success': True,
             'score': score,
             'total_marks': total_marks,
-            'percentage': round(percentage, 2)
+            'percentage': round(percentage, 2),
+            'form_type': form['form_type'],
+            'can_download': form['form_type'] == 'public',
+            'download_requested': form['form_type'] != 'public',
+            'message': 'Download access ' + ('automatically granted' if form['form_type'] == 'public' else 'request submitted')
         })
     except Exception as e:
         print(f"Submit form error: {e}")
         return jsonify({'success': False, 'error': str(e)})
+    
+
+@app.route('/my-responses/downloads')
+@login_required
+def my_response_downloads():
+    """Student's view of their response downloads"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get responses with download status
+            cursor.execute('''
+                SELECT r.*, f.title, f.form_type, f.department,
+                       rd.access_granted, rd.granted_at, rd.download_count,
+                       rd.last_downloaded_at, u.name as teacher_name
+                FROM responses r
+                JOIN forms f ON r.form_id = f.id
+                LEFT JOIN response_downloads rd ON r.id = rd.response_id AND rd.student_id = r.student_id
+                LEFT JOIN users u ON f.created_by = u.id
+                WHERE r.student_id = %s
+                ORDER BY r.submitted_at DESC
+            ''', (session['user_id'],))
+            responses = cursor.fetchall()
+            
+        connection.close()
+        
+        responses_html = ''
+        for resp in responses:
+            # Determine download status
+            if resp['form_type'] == 'public':
+                status_badge = '<span class="badge bg-success">Auto-Access</span>'
+                download_btn = f'''
+                <button onclick="downloadResponse({resp['id']})" class="btn btn-sm btn-success">
+                    <i class="fas fa-download me-1"></i>Download PDF
+                </button>
+                '''
+            elif resp['access_granted']:
+                status_badge = f'<span class="badge bg-success">Granted</span>'
+                if resp['granted_at']:
+                    status_badge += f'<br><small>{resp["granted_at"].strftime("%Y-%m-%d")}</small>'
+                download_btn = f'''
+                <button onclick="downloadResponse({resp['id']})" class="btn btn-sm btn-success">
+                    <i class="fas fa-download me-1"></i>Download PDF
+                </button>
+                <small class="text-muted">Downloads: {resp['download_count'] or 0}</small>
+                '''
+            else:
+                status_badge = '<span class="badge bg-warning">Pending Approval</span>'
+                download_btn = f'''
+                <button onclick="requestDownload({resp['id']})" class="btn btn-sm btn-outline-warning" 
+                        {'disabled' if resp.get('download_requested') else ''}>
+                    <i class="fas fa-paper-plane me-1"></i>
+                    {'Request Sent' if resp.get('download_requested') else 'Request Download'}
+                </button>
+                '''
+            
+            score_class = 'text-success' if resp['percentage'] >= 70 else 'text-warning' if resp['percentage'] >= 50 else 'text-danger'
+            
+            responses_html += f'''
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-8">
+                            <h5>{resp['title']}</h5>
+                            <p class="text-muted mb-1">
+                                <i class="fas fa-building me-1"></i>{resp['department']} | 
+                                <i class="fas fa-chalkboard-teacher me-1"></i>{resp['teacher_name'] or 'N/A'}
+                            </p>
+                            <div class="d-flex align-items-center mb-2">
+                                <span class="{score_class} fw-bold me-3">
+                                    Score: {resp['score']}/{resp['total_marks']} ({resp['percentage']}%)
+                                </span>
+                                <span class="badge {'bg-info' if resp['form_type'] == 'open' else 'bg-success' if resp['form_type'] == 'public' else 'bg-purple'}">
+                                    {resp['form_type'].upper()}
+                                </span>
+                            </div>
+                            <small class="text-muted">
+                                <i class="fas fa-calendar me-1"></i>Submitted: {resp['submitted_at'].strftime('%Y-%m-%d %H:%M')}
+                            </small>
+                        </div>
+                        <div class="col-md-4 text-end">
+                            <div class="mb-2">
+                                {status_badge}
+                            </div>
+                            {download_btn}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            '''
+        
+        if not responses_html:
+            responses_html = '''
+            <div class="text-center py-5">
+                <i class="fas fa-file-download fa-3x text-muted mb-3"></i>
+                <h4>No responses yet</h4>
+                <p class="text-muted">You haven't submitted any forms yet.</p>
+                <a href="/dashboard" class="btn btn-primary">
+                    <i class="fas fa-list me-2"></i>Browse Available Forms
+                </a>
+            </div>
+            '''
+        
+        content = f'''
+        <div class="mb-4">
+            <h2 class="text-white">My Response Downloads</h2>
+            <p class="text-white-50">Download your form responses as PDF</p>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-download me-2"></i>Available Downloads ({len(responses)})
+                </h5>
+            </div>
+            <div class="card-body">
+                {responses_html}
+            </div>
+        </div>
+        
+        <!-- Download Stats -->
+        <div class="row mt-4">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h6>Total Responses</h6>
+                        <h3>{len(responses)}</h3>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h6>Downloadable</h6>
+                        <h3>{len([r for r in responses if r['access_granted'] or r['form_type'] == 'public'])}</h3>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h6>Pending Requests</h6>
+                        <h3>{len([r for r in responses if not r['access_granted'] and r['form_type'] != 'public'])}</h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+        '''
+        
+        scripts = '''
+        <script>
+            function downloadResponse(responseId) {
+                // Show loading
+                const btn = event.target.closest('button');
+                const originalHTML = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Generating PDF...';
+                btn.disabled = true;
+                
+                fetch('/download-response/' + responseId)
+                    .then(res => {
+                        if (!res.ok) throw new Error('Download failed');
+                        return res.blob();
+                    })
+                    .then(blob => {
+                        // Create download link
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `response_${responseId}.pdf`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                        
+                        // Update button
+                        btn.innerHTML = '<i class="fas fa-check me-1"></i>Downloaded';
+                        setTimeout(() => {
+                            btn.innerHTML = originalHTML;
+                            btn.disabled = false;
+                        }, 2000);
+                    })
+                    .catch(error => {
+                        console.error('Download error:', error);
+                        alert('Error downloading response: ' + error.message);
+                        btn.innerHTML = originalHTML;
+                        btn.disabled = false;
+                    });
+            }
+            
+            function requestDownload(responseId) {
+                if (confirm('Request download permission for this response?')) {
+                    fetch('/request-download/' + responseId, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert(data.message);
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + data.error);
+                        }
+                    })
+                    .catch(error => {
+                        alert('Network error: ' + error);
+                    });
+                }
+            }
+        </script>
+        '''
+        
+        return html_wrapper('Response Downloads', content, get_navbar(), scripts)
+        
+    except Exception as e:
+        print(f"My response downloads error: {e}")
+        traceback.print_exc()
+        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+
+@app.route('/form/<int:form_id>/response-downloads')
+@teacher_required
+def manage_response_downloads(form_id):
+    """Manage response download requests for a form"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Check if user owns the form or is admin
+            cursor.execute('SELECT created_by FROM forms WHERE id = %s', (form_id,))
+            form = cursor.fetchone()
+            
+            if not form:
+                connection.close()
+                return html_wrapper('Error', '<div class="alert alert-danger">Form not found</div>', get_navbar(), '')
+            
+            if form['created_by'] != session['user_id'] and session['role'] not in ['admin', 'super_admin']:
+                connection.close()
+                return html_wrapper('Error', '<div class="alert alert-danger">Access denied</div>', get_navbar(), '')
+            
+            # Get pending download requests
+            cursor.execute('''
+                SELECT rd.*, r.student_id, u.name as student_name, 
+                       u.email as student_email, r.score, r.total_marks,
+                       r.percentage, r.submitted_at, f.title as form_title
+                FROM response_downloads rd
+                JOIN responses r ON rd.response_id = r.id
+                JOIN forms f ON rd.form_id = f.id
+                JOIN users u ON rd.student_id = u.id
+                WHERE rd.form_id = %s AND rd.access_granted = FALSE
+                ORDER BY rd.created_at DESC
+            ''', (form_id,))
+            pending_requests = cursor.fetchall()
+            
+            # Get granted downloads
+            cursor.execute('''
+                SELECT rd.*, r.student_id, u.name as student_name, 
+                       u.email as student_email, r.score, r.total_marks,
+                       r.percentage, r.submitted_at, f.title as form_title,
+                       u2.name as granted_by_name, rd.granted_at, rd.download_count
+                FROM response_downloads rd
+                JOIN responses r ON rd.response_id = r.id
+                JOIN forms f ON rd.form_id = f.id
+                JOIN users u ON rd.student_id = u.id
+                LEFT JOIN users u2 ON rd.granted_by = u2.id
+                WHERE rd.form_id = %s AND rd.access_granted = TRUE
+                ORDER BY rd.granted_at DESC
+            ''', (form_id,))
+            granted_downloads = cursor.fetchall()
+            
+            # Get form details
+            cursor.execute('SELECT title, form_type FROM forms WHERE id = %s', (form_id,))
+            form_details = cursor.fetchone()
+        
+        connection.close()
+        
+        pending_html = ''
+        for req in pending_requests:
+            pending_html += f'''
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-8">
+                            <h6>{req['student_name']}</h6>
+                            <p class="text-muted mb-1">
+                                <i class="fas fa-envelope me-1"></i>{req['student_email']}<br>
+                                <i class="fas fa-chart-bar me-1"></i>Score: {req['score']}/{req['total_marks']} ({req['percentage']}%)<br>
+                                <i class="fas fa-calendar me-1"></i>Submitted: {req['submitted_at'].strftime('%Y-%m-%d')}
+                            </p>
+                        </div>
+                        <div class="col-md-4 text-end">
+                            <button onclick="handleDownloadRequest({req['id']}, 'approve')" class="btn btn-success btn-sm mb-2">
+                                <i class="fas fa-check me-1"></i>Approve
+                            </button>
+                            <button onclick="handleDownloadRequest({req['id']}, 'reject')" class="btn btn-danger btn-sm">
+                                <i class="fas fa-times me-1"></i>Reject
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            '''
+        
+        if not pending_html:
+            pending_html = '<div class="alert alert-info">No pending download requests.</div>'
+        
+        granted_html = ''
+        for download in granted_downloads:
+            granted_html += f'''
+            <tr>
+                <td>{download['student_name']}</td>
+                <td>{download['student_email']}</td>
+                <td>{download['score']}/{download['total_marks']} ({download['percentage']}%)</td>
+                <td>
+                    <span class="badge bg-success">Granted</span><br>
+                    <small>{download['granted_at'].strftime('%Y-%m-%d') if download['granted_at'] else 'N/A'}</small>
+                </td>
+                <td>{download['granted_by_name'] or 'Auto'}</td>
+                <td>{download['download_count']}</td>
+                <td>
+                    <button onclick="revokeDownload({download['id']})" class="btn btn-sm btn-outline-danger">
+                        <i class="fas fa-ban"></i> Revoke
+                    </button>
+                </td>
+            </tr>
+            '''
+        
+        content = f'''
+        <div class="mb-4">
+            <h2 class="text-white">Manage Response Downloads</h2>
+            <p class="text-white-50">Form: {form_details['title']} ({form_details['form_type'].upper()})</p>
+        </div>
+        
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="fas fa-clock me-2"></i>Pending Requests ({len(pending_requests)})
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        {pending_html}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="fas fa-check-circle me-2"></i>Granted Downloads ({len(granted_downloads)})
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Student</th>
+                                        <th>Email</th>
+                                        <th>Score</th>
+                                        <th>Status</th>
+                                        <th>Granted By</th>
+                                        <th>Downloads</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {granted_html}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        '''
+        
+        scripts = '''
+        <script>
+            function handleDownloadRequest(downloadId, action) {
+                const actionText = action === 'approve' ? 'approve' : 'reject';
+                if (confirm(`Are you sure you want to ${actionText} this download request?`)) {
+                    fetch('/handle-download-request/' + downloadId + '/' + action, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert(`Download request ${actionText}d successfully!`);
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + data.error);
+                        }
+                    })
+                    .catch(error => {
+                        alert('Network error: ' + error);
+                    });
+                }
+            }
+            
+            function revokeDownload(downloadId) {
+                if (confirm('Revoke download access? The student will no longer be able to download this response.')) {
+                    fetch('/revoke-download/' + downloadId, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert('Download access revoked!');
+                            window.location.reload();
+                        } else {
+                            alert('Error: ' + data.error);
+                        }
+                    })
+                    .catch(error => {
+                        alert('Network error: ' + error);
+                    });
+                }
+            }
+        </script>
+        '''
+        
+        return html_wrapper('Manage Downloads', content, get_navbar(), scripts)
+        
+    except Exception as e:
+        print(f"Manage response downloads error: {e}")
+        traceback.print_exc()
+        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+
+@app.route('/request-download/<int:response_id>', methods=['POST'])
+@login_required
+def request_download(response_id):
+    """Request download permission for a response - FIXED VERSION"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Check if response belongs to student
+            cursor.execute('''
+                SELECT r.*, f.title, f.form_type, f.created_by
+                FROM responses r
+                JOIN forms f ON r.form_id = f.id
+                WHERE r.id = %s AND r.student_id = %s
+            ''', (response_id, session['user_id']))
+            response = cursor.fetchone()
+            
+            if not response:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Response not found or access denied'}), 404
+            
+            # Check if already has permission
+            if response['form_type'] == 'public':
+                connection.close()
+                return jsonify({'success': False, 'error': 'Public forms have automatic download access'}), 400
+            
+            # Check if request already exists
+            cursor.execute('''
+                SELECT id FROM response_downloads 
+                WHERE response_id = %s AND student_id = %s
+            ''', (response_id, session['user_id']))
+            existing = cursor.fetchone()
+            
+            if existing:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Download request already exists'}), 400
+            
+            # Create download request
+            download_token, form_details = create_response_download_entry(
+                response_id, session['user_id'], response['form_id']
+            )
+            
+            if not download_token:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Failed to create download request'}), 500
+            
+            connection.close()
+            
+            # Create notifications
+            create_notification(
+                user_id=session['user_id'],
+                title='Download Request Sent',
+                message=f'Download request sent for your response to "{response["title"]}".',
+                type='info',
+                link='/my-responses/downloads'
+            )
+            
+            # Check if form_details exists and has creator_id
+            if form_details and 'creator_id' in form_details:
+                creator_id = form_details['creator_id']
+                if creator_id != session['user_id']:
+                    create_notification(
+                        user_id=creator_id,
+                        title='New Download Request',
+                        message=f'{session["name"]} has requested to download their response to "{response["title"]}".',
+                        type='warning',
+                        link=f'/form/{response["form_id"]}/response-downloads'
+                    )
+            
+            return jsonify({
+                'success': True,
+                'message': 'Download request submitted successfully'
+            })
+            
+    except Exception as e:
+        print(f"Request download error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+@app.route('/debug/check-response/<int:response_id>')
+@login_required
+def debug_check_response(response_id):
+    """Debug endpoint to check response details"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get response details
+            cursor.execute('''
+                SELECT r.*, f.title, f.created_by, u.name as student_name
+                FROM responses r
+                JOIN forms f ON r.form_id = f.id
+                JOIN users u ON r.student_id = u.id
+                WHERE r.id = %s
+            ''', (response_id,))
+            response = cursor.fetchone()
+            
+            if not response:
+                return jsonify({'error': 'Response not found'})
+            
+            # Check download entries
+            cursor.execute('''
+                SELECT * FROM response_downloads 
+                WHERE response_id = %s AND student_id = %s
+            ''', (response_id, session['user_id']))
+            download_entry = cursor.fetchone()
+            
+            # Check form details
+            cursor.execute('''
+                SELECT f.*, u.name as creator_name, u.email as creator_email
+                FROM forms f
+                JOIN users u ON f.created_by = u.id
+                WHERE f.id = %s
+            ''', (response['form_id'],))
+            form_details = cursor.fetchone()
+            
+        connection.close()
+        
+        return jsonify({
+            'success': True,
+            'response': response,
+            'download_entry': download_entry,
+            'form_details': form_details,
+            'user_id': session['user_id'],
+            'has_creator_id': 'created_by' in response if response else False,
+            'form_details_keys': list(form_details.keys()) if form_details else []
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()})
+
+@app.route('/handle-download-request/<int:download_id>/<action>', methods=['POST'])
+@teacher_required
+def handle_download_request(download_id, action):
+    """Approve or reject download request"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get download request details
+            cursor.execute('''
+                SELECT rd.*, r.student_id, f.title, f.created_by as form_owner,
+                       u.name as student_name, u.email as student_email
+                FROM response_downloads rd
+                JOIN responses r ON rd.response_id = r.id
+                JOIN forms f ON rd.form_id = f.id
+                JOIN users u ON rd.student_id = u.id
+                WHERE rd.id = %s
+            ''', (download_id,))
+            download = cursor.fetchone()
+            
+            if not download:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Download request not found'})
+            
+            # Check permissions
+            if download['form_owner'] != session['user_id'] and session['role'] not in ['admin', 'super_admin']:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Access denied'})
+            
+            if action == 'approve':
+                # Grant access
+                details = grant_download_access(download_id, session['user_id'])
+                
+                # Create notifications
+                create_notification(
+                    user_id=download['student_id'],
+                    title='Download Access Granted',
+                    message=f'Your download request for "{download["title"]}" has been approved.',
+                    type='success',
+                    link='/my-responses/downloads'
+                )
+                
+                create_notification(
+                    user_id=session['user_id'],
+                    title='Download Request Approved',
+                    message=f'You have approved {download["student_name"]}\'s download request.',
+                    type='success',
+                    link=f'/form/{download["form_id"]}/response-downloads'
+                )
+                
+                # Send email notification
+                if ENABLE_EMAIL_NOTIFICATIONS:
+                    html_content = f'''
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #10b981;">Download Access Granted</h2>
+                        <p>Hello {download['student_name']},</p>
+                        <p>Your request to download your response has been approved.</p>
+                        <div style="background: #f0f9ff; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                            <p><strong>Response Details:</strong></p>
+                            <p>Form: {download['title']}</p>
+                            <p>Approved By: {session['name']}</p>
+                            <p>Approval Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                        </div>
+                        <p>You can now download your response from your dashboard.</p>
+                        <a href="http://localhost:5000/my-responses/downloads" style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Download Now</a>
+                    </div>
+                    '''
+                    send_email(download['student_email'], 'Download Access Granted - FormMaster Pro', html_content)
+                
+                connection.close()
+                return jsonify({'success': True, 'message': 'Download request approved'})
+                
+            elif action == 'reject':
+                # Delete the download request
+                cursor.execute('DELETE FROM response_downloads WHERE id = %s', (download_id,))
+                connection.commit()
+                connection.close()
+                
+                # Create notifications
+                create_notification(
+                    user_id=download['student_id'],
+                    title='Download Request Rejected',
+                    message=f'Your download request for "{download["title"]}" has been rejected.',
+                    type='danger',
+                    link='/my-responses/downloads'
+                )
+                
+                create_notification(
+                    user_id=session['user_id'],
+                    title='Download Request Rejected',
+                    message=f'You have rejected {download["student_name"]}\'s download request.',
+                    type='warning',
+                    link=f'/form/{download["form_id"]}/response-downloads'
+                )
+                
+                return jsonify({'success': True, 'message': 'Download request rejected'})
+            else:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Invalid action'})
+                
+    except Exception as e:
+        print(f"Handle download request error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/revoke-download/<int:download_id>', methods=['POST'])
+@teacher_required
+def revoke_download(download_id):
+    """Revoke download access"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get download details
+            cursor.execute('''
+                SELECT rd.*, r.student_id, f.title, f.created_by as form_owner,
+                       u.name as student_name, u.email as student_email
+                FROM response_downloads rd
+                JOIN responses r ON rd.response_id = r.id
+                JOIN forms f ON rd.form_id = f.id
+                JOIN users u ON rd.student_id = u.id
+                WHERE rd.id = %s
+            ''', (download_id,))
+            download = cursor.fetchone()
+            
+            if not download:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Download not found'})
+            
+            # Check permissions
+            if download['form_owner'] != session['user_id'] and session['role'] not in ['admin', 'super_admin']:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Access denied'})
+            
+            # Revoke access
+            cursor.execute('''
+                UPDATE response_downloads 
+                SET access_granted = FALSE,
+                    granted_by = NULL,
+                    granted_at = NULL
+                WHERE id = %s
+            ''', (download_id,))
+            connection.commit()
+            
+            connection.close()
+            
+            # Create notifications
+            create_notification(
+                user_id=download['student_id'],
+                title='Download Access Revoked',
+                message=f'Your download access for "{download["title"]}" has been revoked.',
+                type='danger',
+                link='/my-responses/downloads'
+            )
+            
+            create_notification(
+                user_id=session['user_id'],
+                title='Download Access Revoked',
+                message=f'You have revoked {download["student_name"]}\'s download access.',
+                type='warning',
+                link=f'/form/{download["form_id"]}/response-downloads'
+            )
+            
+            return jsonify({'success': True, 'message': 'Download access revoked'})
+            
+    except Exception as e:
+        print(f"Revoke download error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/download-response/<int:response_id>')
+@login_required
+def download_response(response_id):
+    """Download response as PDF - Improved Version"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get response details with proper permission checks
+            cursor.execute('''
+                SELECT r.*, f.title, f.description, f.form_type, f.created_by as form_owner,
+                       u.name as student_name, u2.name as teacher_name
+                FROM responses r
+                JOIN forms f ON r.form_id = f.id
+                JOIN users u ON r.student_id = u.id
+                LEFT JOIN users u2 ON f.created_by = u2.id
+                WHERE r.id = %s
+            ''', (response_id,))
+            response = cursor.fetchone()
+            
+            if not response:
+                connection.close()
+                return '''
+                <script>
+                    alert("Response not found");
+                    window.history.back();
+                </script>
+                ''', 404
+            
+            # Check download permissions
+            admin_access = session['role'] in ['admin', 'super_admin']
+            is_form_creator = response['form_owner'] == session['user_id']
+            is_response_owner = response['student_id'] == session['user_id']
+            
+            # Check for explicit download permission
+            cursor.execute('''
+                SELECT rd.* FROM response_downloads rd
+                WHERE rd.response_id = %s AND rd.student_id = %s
+            ''', (response_id, session['user_id']))
+            permission = cursor.fetchone()
+            
+            has_permission = False
+            
+            # Admin/Form Creator can always download
+            if admin_access or is_form_creator:
+                has_permission = True
+            # Response owner with permission or public form
+            elif is_response_owner:
+                if response['form_type'] == 'public':
+                    has_permission = True
+                elif permission and permission['access_granted']:
+                    has_permission = True
+            
+            if not has_permission:
+                connection.close()
+                return '''
+                <script>
+                    alert("You don't have permission to download this response");
+                    window.history.back();
+                </script>
+                ''', 403
+            
+            # Update download count if there's a permission entry
+            if permission:
+                update_download_count(permission['id'])
+            
+            # Get form questions
+            cursor.execute('SELECT questions FROM forms WHERE id = %s', (response['form_id'],))
+            form_data = cursor.fetchone()
+            
+        connection.close()
+        
+        # Parse questions and answers
+        try:
+            if form_data and form_data['questions']:
+                if isinstance(form_data['questions'], str):
+                    questions = json.loads(form_data['questions'])
+                elif isinstance(form_data['questions'], dict):
+                    questions = form_data['questions']
+                else:
+                    questions = []
+            else:
+                questions = []
+        except Exception as e:
+            print(f"Error parsing questions: {e}")
+            questions = []
+        
+        try:
+            if response['answers'] and isinstance(response['answers'], str):
+                answers = json.loads(response['answers'])
+            elif response['answers'] and isinstance(response['answers'], dict):
+                answers = response['answers']
+            else:
+                answers = {}
+        except Exception as e:
+            print(f"Error parsing answers: {e}")
+            answers = {}
+        
+        # Generate PDF - Simplified version
+        from io import BytesIO
+        from flask import make_response
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        
+        # Create PDF buffer
+        buffer = BytesIO()
+        
+        try:
+            # Create PDF document with error handling
+            c = canvas.Canvas(buffer, pagesize=letter)
+            width, height = letter
+            
+            # Simple header
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(100, height - 50, f"Response Report: {response['title']}")
+            c.setFont("Helvetica", 12)
+            
+            # Basic information
+            y = height - 80
+            c.drawString(100, y, f"Student: {response['student_name']}")
+            y -= 20
+            c.drawString(100, y, f"Score: {response['score']}/{response['total_marks']} ({response['percentage']}%)")
+            y -= 20
+            c.drawString(100, y, f"Teacher: {response['teacher_name'] or 'N/A'}")
+            y -= 20
+            c.drawString(100, y, f"Submitted: {response['submitted_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+            y -= 40
+            
+            # Questions and Answers
+            if questions:
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(100, y, "Questions & Answers:")
+                y -= 30
+                c.setFont("Helvetica", 12)
+                
+                for i, q in enumerate(questions, 1):
+                    # Check if we need a new page
+                    if y < 100:
+                        c.showPage()
+                        c.setFont("Helvetica", 12)
+                        y = height - 50
+                    
+                    # Question
+                    question_text = q.get('question', f'Question {i}')
+                    c.setFont("Helvetica-Bold", 12)
+                    c.drawString(100, y, f"Q{i}: {question_text}")
+                    y -= 20
+                    
+                    # Answer
+                    q_id = str(q.get('id', i-1))
+                    student_answer = answers.get(q_id, 'Not answered')
+                    
+                    c.setFont("Helvetica", 10)
+                    # Wrap answer text
+                    answer_text = f"Answer: {student_answer}"
+                    words = answer_text.split()
+                    line = ""
+                    
+                    for word in words:
+                        if len(line + " " + word) < 60:
+                            line = line + " " + word if line else word
+                        else:
+                            c.drawString(120, y, line)
+                            y -= 15
+                            line = word
+                    
+                    if line:
+                        c.drawString(120, y, line)
+                        y -= 20
+                    
+                    # Add spacing between questions
+                    y -= 10
+            
+            c.save()
+            
+            # Get PDF data
+            pdf_data = buffer.getvalue()
+            buffer.close()
+            
+            # Create response
+            response_pdf = make_response(pdf_data)
+            response_pdf.headers['Content-Type'] = 'application/pdf'
+            response_pdf.headers['Content-Disposition'] = f'attachment; filename="response_{response_id}.pdf"'
+            
+            return response_pdf
+            
+        except Exception as pdf_error:
+            print(f"PDF generation error: {pdf_error}")
+            buffer.close()
+            raise pdf_error
+            
+    except Exception as e:
+        print(f"Download response error: {e}")
+        traceback.print_exc()
+        return '''
+        <script>
+            alert("Error downloading response. Please try again.");
+            window.history.back();
+        </script>
+        ''', 500
+    
+@app.route('/test-pdf-generate')
+@login_required
+def test_pdf_generate():
+    """Test PDF generation with sample data"""
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from io import BytesIO
+        from flask import make_response
+        
+        # Create simple test PDF
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        
+        c.setFont("Helvetica", 16)
+        c.drawString(100, 750, "Test PDF Generation")
+        c.setFont("Helvetica", 12)
+        c.drawString(100, 720, f"User: {session['name']}")
+        c.drawString(100, 700, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        c.drawString(100, 680, "This is a test PDF to verify generation works.")
+        
+        c.save()
+        
+        pdf_data = buffer.getvalue()
+        buffer.close()
+        
+        response = make_response(pdf_data)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = 'attachment; filename="test_pdf.pdf"'
+        
+        return response
+        
+    except Exception as e:
+        return f'''
+        <html>
+        <body>
+            <script>
+                alert("PDF Test Error: {str(e)}");
+                window.history.back();
+            </script>
+        </body>
+        </html>
+        ''', 500
 
 @app.route('/form/<int:form_id>/responses')
 @login_required

@@ -46,25 +46,57 @@ OTP_LENGTH = 6
 
 load_dotenv()
 
-# Database Configuration from environment variables
-MYSQL_HOST = os.getenv('MYSQL_HOST')
-MYSQL_USER = os.getenv('MYSQL_USER')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
-MYSQL_DB = os.getenv('MYSQL_DB')
+# ========== SECURE CONFIGURATION ==========
+try:
+    # Try to load from secure config file
+    from secure_config import secure_config
+    
+    config = secure_config.load_config()
+    
+    if config:
+        # Use values from encrypted config
+        MYSQL_HOST = config.get('MYSQL_HOST', 'mysql-vdry.railway.internal')
+        MYSQL_USER = config.get('MYSQL_USER', 'root')
+        MYSQL_PASSWORD = config.get('MYSQL_PASSWORD', 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs')
+        MYSQL_DB = config.get('MYSQL_DB', 'railway')
+        ADMIN_PASSWORD = config.get('ADMIN_PASSWORD', 'admin123')
+        SUPER_ADMIN_PASSWORD = config.get('SUPER_ADMIN_PASSWORD', 'superadmin123')
+        app.secret_key = config.get('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
+        
+        # Email config (optional)
+        EMAIL_USER = config.get('EMAIL_USER', 'gopi200026@gmail.com')
+        EMAIL_PASSWORD = config.get('EMAIL_PASSWORD', 'laku neok xexr croj')
+        
+        print("✅ Loaded configuration from secure file")
+    else:
+        raise ValueError("Config file is empty")
+        
+except (ImportError, ValueError) as e:
+    print(f"⚠️  Secure config not available: {e}")
+    print("⚠️  Using fallback configuration")
+    
+    # Fallback to hardcoded values (less secure)
+    MYSQL_HOST = 'mysql-vdry.railway.internal'
+    MYSQL_USER = 'root'
+    MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
+    MYSQL_DB = 'railway'
+    
+    # Get admin passwords from environment or use defaults
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')
+    SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', 'superadmin123')
+    
+    # Email config
+    EMAIL_USER = 'gopi200026@gmail.com'
+    EMAIL_PASSWORD = 'laku neok xexr croj'
+    
+    app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
 
-print(f"DEBUG: MYSQL_HOST = {MYSQL_HOST}")
-print(f"DEBUG: MYSQL_USER = {MYSQL_USER}")
-print(f"DEBUG: MYSQL_DB = {MYSQL_DB}")
-
-# Validate environment variables
-if not MYSQL_HOST:
-    print("ERROR: MYSQL_HOST is not set in environment variables")
-if not MYSQL_USER:
-    print("ERROR: MYSQL_USER is not set in environment variables")
-if not MYSQL_PASSWORD:
-    print("WARNING: MYSQL_PASSWORD is not set in environment variables")
-if not MYSQL_DB:
-    print("ERROR: MYSQL_DB is not set in environment variables")
+print(f"DEBUG: Database: {MYSQL_DB}")
+print(f"DEBUG: Host: {MYSQL_HOST}")
 
 
 # Validation (optional)
@@ -13457,6 +13489,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

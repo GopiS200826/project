@@ -36,10 +36,24 @@ OTP_EXPIRY_MINUTES = 10
 OTP_LENGTH = 6
 
 # Database Configuration
-MYSQL_HOST = 'mysql-vdry.railway.internal'
-MYSQL_USER = 'root'
-MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
-MYSQL_DB = 'railway'
+#MYSQL_HOST = 'mysql-vdry.railway.internal'
+#MYSQL_USER = 'root'
+#MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
+#MYSQL_DB = 'railway'
+
+# Database configuration
+MYSQL_HOST = os.getenv('MYSQL_HOST')
+MYSQL_USER = os.getenv('MYSQL_USER')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
+MYSQL_DB = os.getenv('MYSQL_DB')
+ADMIN_PASSWORD1 = os.getenv('ADMIN_PASSWORD')
+SUPER_ADMIN_PASSWORD1 = os.getenv('SUPER_ADMIN_PASSWORD')
+
+# Validation (optional)
+required_vars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
+for var in required_vars:
+    if not locals().get(var):
+        print(f"Warning: {var} is not set in environment variables")
 
 
 # Email Configuration
@@ -54,12 +68,12 @@ ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
 
 # Default Admin Credentials
 ADMIN_EMAIL = 'admin@example.com'
-ADMIN_PASSWORD = 'admin123'
+ADMIN_PASSWORD = ADMIN_PASSWORD1
 ADMIN_NAME = 'System Administrator'
 
 # Super Admin Credentials
 SUPER_ADMIN_EMAIL = 'superadmin@example.com'
-SUPER_ADMIN_PASSWORD = 'superadmin123'
+SUPER_ADMIN_PASSWORD = SUPER_ADMIN_PASSWORD1
 SUPER_ADMIN_NAME = 'Super Administrator'
 
 # Department options
@@ -13425,6 +13439,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

@@ -52,6 +52,21 @@ MYSQL_USER = os.getenv('MYSQL_USER')
 MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
 MYSQL_DB = os.getenv('MYSQL_DB')
 
+print(f"DEBUG: MYSQL_HOST = {MYSQL_HOST}")
+print(f"DEBUG: MYSQL_USER = {MYSQL_USER}")
+print(f"DEBUG: MYSQL_DB = {MYSQL_DB}")
+
+# Validate environment variables
+if not MYSQL_HOST:
+    print("ERROR: MYSQL_HOST is not set in environment variables")
+if not MYSQL_USER:
+    print("ERROR: MYSQL_USER is not set in environment variables")
+if not MYSQL_PASSWORD:
+    print("WARNING: MYSQL_PASSWORD is not set in environment variables")
+if not MYSQL_DB:
+    print("ERROR: MYSQL_DB is not set in environment variables")
+
+
 # Validation (optional)
 required_vars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
 for var in required_vars:
@@ -13442,6 +13457,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

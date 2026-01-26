@@ -26,8 +26,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 import io
-from dotenv import load_dotenv
-
 
 # Create Flask app ONCE
 app = Flask(__name__)
@@ -38,90 +36,29 @@ OTP_EXPIRY_MINUTES = 10
 OTP_LENGTH = 6
 
 # Database Configuration
-#MYSQL_HOST = 'mysql-vdry.railway.internal'
-#MYSQL_USER = 'root'
-#MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
-#MYSQL_DB = 'railway'
-
-
-load_dotenv()
-
-# ========== SECURE CONFIGURATION ========
-try:
-    # Try to load from secure config file
-    from secure_config import secure_config
-    
-    config = secure_config.load_config()
-    
-    if config:
-        # Use values from encrypted config
-        MYSQL_HOST = config.get('MYSQL_HOST', 'mysql-vdry.railway.internal')
-        MYSQL_USER = config.get('MYSQL_USER', 'root')
-        MYSQL_PASSWORD = config.get('MYSQL_PASSWORD', 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs')
-        MYSQL_DB = config.get('MYSQL_DB', 'railway')
-        ADMIN_PASSWORD = config.get('ADMIN_PASSWORD', 'admin123')
-        SUPER_ADMIN_PASSWORD = config.get('SUPER_ADMIN_PASSWORD', 'superadmin123')
-        app.secret_key = config.get('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
-        
-      
-        
-        print("✅ Loaded configuration from secure file")
-    else:
-        raise ValueError("Config file is empty")
-        
-except (ImportError, ValueError) as e:
-    print(f"⚠️  Secure config not available: {e}")
-    print("⚠️  Using fallback configuration")
-    
-    # Fallback to hardcoded values (less secure)
-    MYSQL_HOST = 'mysql-vdry.railway.internal'
-    MYSQL_USER = 'root'
-    MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
-    MYSQL_DB = 'railway'
-    
-    # Get admin passwords from environment or use defaults
-    import os
-    from dotenv import load_dotenv
-    load_dotenv()
-    
-    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin123')
-    SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD', 'superadmin123')
-    
-    # Email config
-    EMAIL_USER = 'gopi200026@gmail.com'
-    EMAIL_PASSWORD = 'laku neok xexr croj'
-    
-    app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
-
-print(f"DEBUG: Database: {MYSQL_DB}")
-print(f"DEBUG: Host: {MYSQL_HOST}")
-
-
-# Validation (optional)
-required_vars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
-for var in required_vars:
-    if not locals().get(var):
-        print(f"Warning: {var} is not set in environment variables")
-
+MYSQL_HOST = 'mysql-vdry.railway.internal'
+MYSQL_USER = 'root'
+MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
+MYSQL_DB = 'railway'
 
 # Email Configuration
-EMAIL_HOST = 'sandbox.smtp.mailtrap.io'
-EMAIL_PORT = 465
-EMAIL_USER = '8d1bc9c8fc7aa2'  # Change this to your email
-EMAIL_PASSWORD = '1271913d63c6ce'  # Change this to your app password
-EMAIL_FROM = 'hello@demomailtrap.co'  # Change this to your ema
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USER = 'gamergopi26@gmail.com'  # Change this to your email
+EMAIL_PASSWORD = 'laku neok xexr croj'  # Change this to your app password
+EMAIL_FROM = 'gamergopi26@gmail.com'  # Change this to your email
 
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
 
 # Default Admin Credentials
 ADMIN_EMAIL = 'admin@example.com'
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+ADMIN_PASSWORD = 'admin123'
 ADMIN_NAME = 'System Administrator'
 
 # Super Admin Credentials
 SUPER_ADMIN_EMAIL = 'superadmin@example.com'
-SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD')
+SUPER_ADMIN_PASSWORD = 'superadmin123'
 SUPER_ADMIN_NAME = 'Super Administrator'
 
 # Department options
@@ -284,6 +221,7 @@ def generate_download_token():
 
 def create_response_download_entry(response_id, student_id, form_id):
     """Create an entry in response_downloads table - FIXED VERSION"""
+    connection = None
     try:
         connection = get_db()
         with connection.cursor() as cursor:
@@ -295,7 +233,6 @@ def create_response_download_entry(response_id, student_id, form_id):
             existing = cursor.fetchone()
             
             if existing:
-                connection.close()
                 return existing['download_token'], None
             
             # Create new entry
@@ -306,7 +243,7 @@ def create_response_download_entry(response_id, student_id, form_id):
                 VALUES (%s, %s, %s, %s)
             ''', (response_id, student_id, form_id, download_token))
             
-            # Get form details for notification - FIXED QUERY
+            # Get form details for notification
             cursor.execute('''
                 SELECT f.title, f.form_type, f.created_by,
                        u.email as creator_email, u.name as creator_name
@@ -317,7 +254,6 @@ def create_response_download_entry(response_id, student_id, form_id):
             form_details = cursor.fetchone()
             
             connection.commit()
-            connection.close()
             
             # Rename 'created_by' to 'creator_id' for consistency
             if form_details:
@@ -328,7 +264,36 @@ def create_response_download_entry(response_id, student_id, form_id):
     except Exception as e:
         print(f"Error creating download entry: {e}")
         traceback.print_exc()
+        if connection:
+            connection.rollback()
         return None, None
+    finally:
+        if connection:
+            connection.close()
+
+@app.route('/test-download-requests')
+@login_required
+def test_download_requests():
+    """Test endpoint to check download requests functionality"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        if user_role not in ['teacher', 'admin', 'super_admin']:
+            return "Only teachers/admins can access this test", 403
+        
+        # Test getting pending requests
+        pending = get_pending_download_requests(form_owner_id=user_id if user_role == 'teacher' else None)
+        
+        return jsonify({
+            'success': True,
+            'user_id': user_id,
+            'user_role': user_role,
+            'pending_requests_count': len(pending),
+            'pending_requests': pending
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 def grant_download_access(download_id, granted_by):
     """Grant download access to a student"""
@@ -399,52 +364,55 @@ def get_download_permission(response_id, student_id):
         return None
 
 def get_pending_download_requests(form_owner_id=None, form_id=None):
-    """Get pending download requests"""
+    """Get pending download requests - FIXED VERSION"""
     try:
+        connection = None
         connection = get_db()
         with connection.cursor() as cursor:
+            query = '''
+                SELECT 
+                    rd.*, 
+                    r.student_id, 
+                    u.name as student_name, 
+                    u.email as student_email, 
+                    f.title as form_title,
+                    r.score, 
+                    r.percentage, 
+                    r.submitted_at,
+                    f.created_by as form_owner_id,
+                    u2.name as form_owner_name
+                FROM response_downloads rd
+                JOIN responses r ON rd.response_id = r.id
+                JOIN forms f ON rd.form_id = f.id
+                JOIN users u ON rd.student_id = u.id
+                LEFT JOIN users u2 ON f.created_by = u2.id
+                WHERE rd.access_granted = FALSE
+            '''
+            
+            params = []
+            
             if form_id:
-                cursor.execute('''
-                    SELECT rd.*, r.student_id, u.name as student_name, 
-                           u.email as student_email, f.title as form_title,
-                           r.score, r.percentage, r.submitted_at
-                    FROM response_downloads rd
-                    JOIN responses r ON rd.response_id = r.id
-                    JOIN forms f ON rd.form_id = f.id
-                    JOIN users u ON rd.student_id = u.id
-                    WHERE rd.form_id = %s AND rd.access_granted = FALSE
-                    ORDER BY rd.created_at DESC
-                ''', (form_id,))
+                query += ' AND rd.form_id = %s'
+                params.append(form_id)
             elif form_owner_id:
-                cursor.execute('''
-                    SELECT rd.*, r.student_id, u.name as student_name, 
-                           u.email as student_email, f.title as form_title,
-                           r.score, r.percentage, r.submitted_at
-                    FROM response_downloads rd
-                    JOIN responses r ON rd.response_id = r.id
-                    JOIN forms f ON rd.form_id = f.id
-                    JOIN users u ON rd.student_id = u.id
-                    WHERE f.created_by = %s AND rd.access_granted = FALSE
-                    ORDER BY rd.created_at DESC
-                ''', (form_owner_id,))
-            else:
-                cursor.execute('''
-                    SELECT rd.*, r.student_id, u.name as student_name, 
-                           u.email as student_email, f.title as form_title,
-                           r.score, r.percentage, r.submitted_at
-                    FROM response_downloads rd
-                    JOIN responses r ON rd.response_id = r.id
-                    JOIN forms f ON rd.form_id = f.id
-                    JOIN users u ON rd.student_id = u.id
-                    WHERE rd.access_granted = FALSE
-                    ORDER BY rd.created_at DESC
-                ''')
+                query += ' AND f.created_by = %s'
+                params.append(form_owner_id)
+            
+            query += ' ORDER BY rd.created_at DESC'
+            
+            print(f"DEBUG: Executing query: {query} with params: {params}")
+            cursor.execute(query, params)
             requests = cursor.fetchall()
-        connection.close()
+            print(f"DEBUG: Found {len(requests)} pending requests")
+        
         return requests
     except Exception as e:
         print(f"Error getting pending downloads: {e}")
+        traceback.print_exc()
         return []
+    finally:
+        if connection:
+            connection.close()
     
 # Add at the top with other imports
 import threading
@@ -534,19 +502,17 @@ def init_db():
             cursor.execute(f"USE {MYSQL_DB}")
             
             # Users table - Updated to include super_admin role
-            # In the init_db() function, update the users table creation:
             cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                email VARCHAR(100) UNIQUE NOT NULL,
-                password VARCHAR(255) NOT NULL,
-                name VARCHAR(100) NOT NULL,
-                role ENUM('student', 'teacher', 'admin', 'super_admin') DEFAULT 'student',
-                department VARCHAR(50) DEFAULT 'IT',
-                phone VARCHAR(20),  # ADD THIS LINE
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_email (email),
-                INDEX idx_department (department)
-            )''')
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            email VARCHAR(100) UNIQUE NOT NULL,
+                            password VARCHAR(255) NOT NULL,
+                            name VARCHAR(100) NOT NULL,
+                            role ENUM('student', 'teacher', 'admin', 'super_admin') DEFAULT 'student',
+                            department VARCHAR(50) DEFAULT 'IT',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            INDEX idx_email (email),
+                            INDEX idx_department (department)
+                            )''')
             
             # In the init_db() function, update the forms table creation:
             cursor.execute('''CREATE TABLE IF NOT EXISTS forms (
@@ -4187,44 +4153,128 @@ def dashboard():
             }
             
             function requestDownloadByForm(formId) {
-                // First get the response ID for this form
-                fetch('/api/get-response/' + formId, {
-                    method: 'GET',
+            fetch('/api/get-response/' + formId, {
+                method: 'GET',
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(res => {
+                // First check what type of content we're getting
+                const contentType = res.headers.get('content-type');
+                console.log('Content-Type:', contentType);
+                
+                if (!contentType || !contentType.includes('application/json')) {
+                    // It's not JSON, let's see what it is
+                    return res.text().then(text => {
+                        console.log('Response text:', text.substring(0, 200)); // Log first 200 chars
+                        throw new Error('Server returned non-JSON response: ' + contentType);
+                    });
+                }
+                return res.json();
+            })
+            .then(data => {
+                if (data.success && data.response_id) {
+                    requestDownload(data.response_id);
+                } else {
+                    alert('Error: ' + (data.error || 'No response found for this form'));
+                }
+            })
+            .catch(error => {
+                console.error('Error details:', error);
+                alert('Error: ' + error.message);
+            });
+        }
+
+        // Update the viewDownloadRequests function in the dashboard
+        function viewDownloadRequests() {
+            // First try to get forms with requests
+            fetch('/api/my-forms-download-requests', {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }
+            })
+            .then(res => {
+                // Check if response is JSON
+                const contentType = res.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    return res.text().then(text => {
+                        console.error('Non-JSON response:', text.substring(0, 200));
+                        // If it's HTML, it might be a redirect or error page
+                        // Just redirect to the main download requests page
+                        window.location.href = '/response-downloads';
+                        return { success: false, forms: [] };
+                    });
+                }
+                return res.json();
+            })
+            .then(data => {
+                if (data.success && data.forms && data.forms.length > 0) {
+                    let html = '<h5>Forms with Pending Download Requests</h5>';
+                    data.forms.forEach(form => {
+                        html += `
+                            <div class="card mb-2">
+                                <div class="card-body">
+                                    <h6>${form.title}</h6>
+                                    <p class="text-muted">Pending requests: ${form.pending_downloads}</p>
+                                    <a href="/form/${form.id}/response-downloads" class="btn btn-sm btn-primary">Manage</a>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    // Show in modal if we have a modal element
+                    const modalElement = document.getElementById('downloadRequestsModal');
+                    if (modalElement) {
+                        const modal = new bootstrap.Modal(modalElement);
+                        document.getElementById('downloadRequestsContent').innerHTML = html;
+                        modal.show();
+                    } else {
+                        // Fallback: redirect to response-downloads page
+                        window.location.href = '/response-downloads';
+                    }
+                } else {
+                    // No forms with requests, redirect to main page
+                    window.location.href = '/response-downloads';
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                // On error, redirect to the main page
+                window.location.href = '/response-downloads';
+            });
+        }
+        function requestDownload(responseId) {
+            if (confirm('Request download permission for this response?')) {
+                fetch('/request-download/' + responseId, {
+                    method: 'POST',
                     headers: {'Content-Type': 'application/json'}
                 })
-                .then(res => res.json())
+                .then(res => {
+                    const contentType = res.headers.get('content-type');
+                    console.log('Content-Type:', contentType);
+                    
+                    if (!contentType || !contentType.includes('application/json')) {
+                        return res.text().then(text => {
+                            console.log('Response text:', text.substring(0, 200));
+                            throw new Error('Server returned non-JSON response: ' + contentType);
+                        });
+                    }
+                    return res.json();
+                })
                 .then(data => {
-                    if (data.success && data.response_id) {
-                        requestDownload(data.response_id);
+                    if (data.success) {
+                        alert(data.message);
+                        window.location.reload();
                     } else {
-                        alert('Error: ' + (data.error || 'No response found for this form'));
+                        alert('Error: ' + data.error);
                     }
                 })
                 .catch(error => {
-                    alert('Network error: ' + error);
+                    console.error('Error details:', error);
+                    alert('Error: ' + error.message);
                 });
             }
-            
-            function requestDownload(responseId) {
-                if (confirm('Request download permission for this response?')) {
-                    fetch('/request-download/' + responseId, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'}
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            alert(data.message);
-                            window.location.reload();
-                        } else {
-                            alert('Error: ' + data.error);
-                        }
-                    })
-                    .catch(error => {
-                        alert('Network error: ' + error);
-                    });
-                }
-            }
+        }
             
             function deleteForm(formId, formTitle) {
                 if (confirm(`Are you sure you want to delete the form "${formTitle}"? This action cannot be undone.`)) {
@@ -4359,6 +4409,1235 @@ def dashboard():
         print(f"Dashboard error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+    
+@app.route('/form/<int:form_id>/response-downloads', methods=['GET'])
+@login_required
+@teacher_required
+def form_response_downloads(form_id):
+    """View and manage download requests for a specific form"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Verify the user has access to this form
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('''
+                    SELECT f.*, u.name as creator_name, 
+                           COUNT(DISTINCT rd.id) as total_pending_requests
+                    FROM forms f
+                    JOIN users u ON f.created_by = u.id
+                    LEFT JOIN response_downloads rd ON f.id = rd.form_id 
+                        AND rd.access_granted = FALSE
+                    WHERE f.id = %s
+                    GROUP BY f.id, u.name
+                ''', (form_id,))
+            else:
+                cursor.execute('''
+                    SELECT f.*, u.name as creator_name, 
+                           COUNT(DISTINCT rd.id) as total_pending_requests
+                    FROM forms f
+                    JOIN users u ON f.created_by = u.id
+                    LEFT JOIN response_downloads rd ON f.id = rd.form_id 
+                        AND rd.access_granted = FALSE
+                    WHERE f.id = %s AND f.created_by = %s
+                    GROUP BY f.id, u.name
+                ''', (form_id, user_id))
+            
+            form = cursor.fetchone()
+            
+            if not form:
+                connection.close()
+                return html_wrapper('Access Denied', '''
+                <div class="alert alert-danger">
+                    <h4>Access Denied</h4>
+                    <p>You do not have permission to access this form or the form does not exist.</p>
+                    <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+                </div>
+                ''', get_navbar(), '')
+            
+            # Get all download requests for this form
+            cursor.execute('''
+                SELECT 
+                    rd.*,
+                    r.student_id,
+                    u.name as student_name,
+                    u.email as student_email,
+                    r.score,
+                    r.percentage,
+                    r.submitted_at,
+                    r.answers,
+                    CASE 
+                        WHEN rd.access_granted = TRUE THEN 'granted'
+                        WHEN rd.access_granted = FALSE THEN 'pending'
+                        ELSE 'denied'
+                    END as status,
+                    rd.created_at as requested_at,
+                    rd.granted_at,
+                    u2.name as granted_by_name
+                FROM response_downloads rd
+                JOIN responses r ON rd.response_id = r.id
+                JOIN users u ON r.student_id = u.id
+                LEFT JOIN users u2 ON rd.granted_by = u2.id
+                WHERE rd.form_id = %s
+                ORDER BY 
+                    CASE WHEN rd.access_granted = FALSE THEN 0 ELSE 1 END,
+                    rd.created_at DESC
+            ''', (form_id,))
+            
+            download_requests = cursor.fetchall()
+            
+            # Get form statistics
+            cursor.execute('''
+                SELECT 
+                    COUNT(DISTINCT r.id) as total_responses,
+                    AVG(r.percentage) as avg_score,
+                    COUNT(DISTINCT CASE WHEN rd.access_granted = TRUE THEN rd.id END) as granted_downloads,
+                    COUNT(DISTINCT CASE WHEN rd.access_granted = FALSE THEN rd.id END) as pending_requests
+                FROM responses r
+                LEFT JOIN response_downloads rd ON r.id = rd.response_id
+                WHERE r.form_id = %s
+            ''', (form_id,))
+            
+            stats = cursor.fetchone()
+            
+            # Get response details for filtering
+            cursor.execute('''
+                SELECT r.id, u.name as student_name, r.score, r.percentage, r.submitted_at
+                FROM responses r
+                JOIN users u ON r.student_id = u.id
+                WHERE r.form_id = %s
+                ORDER BY r.submitted_at DESC
+            ''', (form_id,))
+            
+            responses = cursor.fetchall()
+            
+        connection.close()
+        
+        # Format download requests
+        pending_requests = []
+        granted_requests = []
+        
+        for req in download_requests:
+            if req['access_granted']:
+                granted_requests.append(req)
+            else:
+                pending_requests.append(req)
+        
+        # Build pending requests HTML
+        pending_html = ''
+        if pending_requests:
+            for req in pending_requests:
+                submitted_at = req['submitted_at'].strftime('%Y-%m-%d %H:%M:%S') if req['submitted_at'] else 'N/A'
+                requested_at = req['requested_at'].strftime('%Y-%m-%d %H:%M:%S') if req['requested_at'] else 'N/A'
+                
+                pending_html += f'''
+                <div class="card mb-3 border-warning">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-8">
+                                <h6 class="card-title">{req['student_name']}</h6>
+                                <p class="card-text mb-1">
+                                    <strong>Email:</strong> {req['student_email']}<br>
+                                    <strong>Score:</strong> {req['score'] or 0} ({req['percentage'] or 0}%)<br>
+                                    <strong>Submitted:</strong> {submitted_at}<br>
+                                    <strong>Requested:</strong> {requested_at}
+                                </p>
+                            </div>
+                            <div class="col-md-4 text-end">
+                                <div class="btn-group-vertical w-100">
+                                    <button onclick="grantDownloadRequest({req['id']})" 
+                                            class="btn btn-success btn-sm mb-2">
+                                        <i class="fas fa-check me-1"></i> Grant Access
+                                    </button>
+                                    <button onclick="denyDownloadRequest({req['id']})" 
+                                            class="btn btn-danger btn-sm">
+                                        <i class="fas fa-times me-1"></i> Deny
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                '''
+        else:
+            pending_html = '''
+            <div class="alert alert-info">
+                <i class="fas fa-info-circle me-2"></i>
+                No pending download requests for this form.
+            </div>
+            '''
+        
+        # Build granted requests HTML
+        granted_html = ''
+        if granted_requests:
+            for req in granted_requests:
+                submitted_at = req['submitted_at'].strftime('%Y-%m-%d %H:%M:%S') if req['submitted_at'] else 'N/A'
+                granted_at = req['granted_at'].strftime('%Y-%m-%d %H:%M:%S') if req['granted_at'] else 'N/A'
+                
+                download_count = req.get('download_count', 0)
+                last_downloaded = req.get('last_downloaded_at')
+                if last_downloaded and isinstance(last_downloaded, datetime):
+                    last_downloaded = last_downloaded.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    last_downloaded = 'Not downloaded yet'
+                
+                granted_html += f'''
+                <div class="card mb-3 border-success">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-8">
+                                <h6 class="card-title">{req['student_name']}</h6>
+                                <p class="card-text mb-1">
+                                    <strong>Email:</strong> {req['student_email']}<br>
+                                    <strong>Score:</strong> {req['score'] or 0} ({req['percentage'] or 0}%)<br>
+                                    <strong>Submitted:</strong> {submitted_at}<br>
+                                    <strong>Granted By:</strong> {req['granted_by_name'] or 'System'}<br>
+                                    <strong>Granted At:</strong> {granted_at}<br>
+                                    <strong>Downloads:</strong> {download_count} (Last: {last_downloaded})
+                                </p>
+                            </div>
+                            <div class="col-md-4 text-end">
+                                <div class="btn-group-vertical w-100">
+                                    <button onclick="revokeDownloadAccess({req['id']})" 
+                                            class="btn btn-warning btn-sm mb-2">
+                                        <i class="fas fa-undo me-1"></i> Revoke Access
+                                    </button>
+                                    <button onclick="viewResponseDetails({req['response_id']})" 
+                                            class="btn btn-info btn-sm">
+                                        <i class="fas fa-eye me-1"></i> View Response
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                '''
+        else:
+            granted_html = '''
+            <div class="alert alert-info">
+                <i class="fas fa-info-circle me-2"></i>
+                No granted download requests for this form.
+            </div>
+            '''
+        
+        # Statistics cards
+        stats_html = f'''
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card text-white bg-primary">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Total Responses</h5>
+                        <h2>{stats.get('total_responses', 0) or 0}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-success">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Average Score</h5>
+                        <h2>{stats.get('avg_score', 0) or 0:.1f}%</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-warning">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Pending Requests</h5>
+                        <h2>{stats.get('pending_requests', 0) or 0}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-info">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Granted Downloads</h5>
+                        <h2>{stats.get('granted_downloads', 0) or 0}</h2>
+                    </div>
+                </div>
+            </div>
+        </div>
+        '''
+        
+        # Response selection for manual download permission
+        response_options = '<option value="">Select a response...</option>'
+        for resp in responses:
+            response_options += f'<option value="{resp["id"]}">{resp["student_name"]} - Score: {resp.get("score", 0)} ({resp.get("percentage", 0):.1f}%)</option>'
+        
+        content = f'''
+        <div class="container-fluid">
+            <!-- Header -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h2 class="mb-1">
+                                <i class="fas fa-download me-2"></i>Download Requests
+                            </h2>
+                            <p class="text-muted mb-0">
+                                Form: <strong>{form['title']}</strong> | 
+                                Created by: {form['creator_name']}
+                            </p>
+                        </div>
+                        <div>
+                            <a href="/form/{form_id}/responses" class="btn btn-outline-primary">
+                                <i class="fas fa-chart-bar me-1"></i> View Responses
+                            </a>
+                            <a href="/dashboard" class="btn btn-outline-secondary ms-2">
+                                <i class="fas fa-arrow-left me-1"></i> Back to Dashboard
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            {stats_html}
+            
+            <!-- Manual Grant Section -->
+            <div class="card mb-4">
+                <div class="card-header bg-secondary text-white">
+                    <h5 class="mb-0">
+                        <i class="fas fa-hand-paper me-2"></i>Manually Grant Download Access
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label class="form-label">Select Response</label>
+                            <select class="form-select" id="responseSelect">
+                                {response_options}
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Actions</label>
+                            <div class="d-grid gap-2">
+                                <button onclick="grantManualAccess()" class="btn btn-success">
+                                    <i class="fas fa-check-circle me-1"></i> Grant Access
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Tabs for Pending/Granted Requests -->
+            <ul class="nav nav-tabs mb-4" id="requestsTab" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="pending-tab" data-bs-toggle="tab" 
+                            data-bs-target="#pending" type="button" role="tab">
+                        <i class="fas fa-clock me-1"></i> Pending Requests
+                        <span class="badge bg-warning ms-2">{len(pending_requests)}</span>
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="granted-tab" data-bs-toggle="tab" 
+                            data-bs-target="#granted" type="button" role="tab">
+                        <i class="fas fa-check-circle me-1"></i> Granted Access
+                        <span class="badge bg-success ms-2">{len(granted_requests)}</span>
+                    </button>
+                </li>
+            </ul>
+            
+            <div class="tab-content" id="requestsTabContent">
+                <!-- Pending Requests Tab -->
+                <div class="tab-pane fade show active" id="pending" role="tabpanel">
+                    {pending_html}
+                </div>
+                
+                <!-- Granted Requests Tab -->
+                <div class="tab-pane fade" id="granted" role="tabpanel">
+                    {granted_html}
+                </div>
+            </div>
+        </div>
+        
+        <!-- Response Details Modal -->
+        <div class="modal fade" id="responseDetailsModal" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Response Details</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body" id="responseDetailsContent">
+                        <!-- Content loaded dynamically -->
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+        // Grant access to a pending request
+        function grantDownloadRequest(downloadId) {{
+            if (confirm('Are you sure you want to grant download access?')) {{
+                fetch(`/api/download-requests/${{downloadId}}/grant`, {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        showToast('Access granted successfully!', 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        showToast('Error: ' + data.error, 'danger');
+                    }}
+                }})
+                .catch(error => {{
+                    showToast('Network error: ' + error, 'danger');
+                }});
+            }}
+        }}
+        
+        // Deny a pending request
+        function denyDownloadRequest(downloadId) {{
+            if (confirm('Are you sure you want to deny this request?')) {{
+                fetch(`/api/download-requests/${{downloadId}}/deny`, {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        showToast('Request denied', 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        showToast('Error: ' + data.error, 'danger');
+                    }}
+                }})
+                .catch(error => {{
+                    showToast('Network error: ' + error, 'danger');
+                }});
+            }}
+        }}
+        
+        // Revoke granted access
+        function revokeDownloadAccess(downloadId) {{
+            if (confirm('Are you sure you want to revoke download access?')) {{
+                fetch(`/api/download-requests/${{downloadId}}/revoke`, {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        showToast('Access revoked successfully!', 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        showToast('Error: ' + data.error, 'danger');
+                    }}
+                }})
+                .catch(error => {{
+                    showToast('Network error: ' + error, 'danger');
+                }});
+            }}
+        }}
+        
+        // Grant manual access to a response
+        function grantManualAccess() {{
+            const responseId = document.getElementById('responseSelect').value;
+            if (!responseId) {{
+                showToast('Please select a response', 'warning');
+                return;
+            }}
+            
+            if (confirm('Grant download access to this response?')) {{
+                fetch('/api/manual-grant-download', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{
+                        response_id: responseId,
+                        form_id: {form_id}
+                    }})
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        showToast('Access granted successfully!', 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        showToast('Error: ' + data.error, 'danger');
+                    }}
+                }})
+                .catch(error => {{
+                    showToast('Network error: ' + error, 'danger');
+                }});
+            }}
+        }}
+        
+        // View response details
+        function viewResponseDetails(responseId) {{
+            fetch(`/api/responses/${{responseId}}/details`)
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        const modal = new bootstrap.Modal(document.getElementById('responseDetailsModal'));
+                        document.getElementById('responseDetailsContent').innerHTML = data.html;
+                        modal.show();
+                    }} else {{
+                        showToast('Error loading response details', 'danger');
+                    }}
+                }})
+                .catch(error => {{
+                    showToast('Network error: ' + error, 'danger');
+                }});
+        }}
+        
+        // Toast notification function
+        function showToast(message, type) {{
+            const toast = `
+                <div class="toast align-items-center text-bg-${{type}} border-0 position-fixed bottom-0 end-0 m-3" role="alert">
+                    <div class="d-flex">
+                        <div class="toast-body">
+                            ${{message}}
+                        </div>
+                        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                    </div>
+                </div>
+            `;
+            
+            document.body.insertAdjacentHTML('beforeend', toast);
+            const bsToast = new bootstrap.Toast(document.querySelector('.toast:last-child'));
+            bsToast.show();
+            
+            // Remove after hiding
+            document.querySelector('.toast:last-child').addEventListener('hidden.bs.toast', function() {{
+                this.remove();
+            }});
+        }}
+        
+        // Auto-refresh every 30 seconds if there are pending requests
+        if ({len(pending_requests)} > 0) {{
+            setInterval(() => {{
+                // Only refresh the pending tab if it's active
+                if (document.getElementById('pending-tab').classList.contains('active')) {{
+                    location.reload();
+                }}
+            }}, 30000);
+        }}
+        </script>
+        
+        <style>
+        .nav-tabs .nav-link {{
+            font-weight: 500;
+            padding: 10px 20px;
+        }}
+        
+        .nav-tabs .nav-link.active {{
+            border-bottom: 3px solid #0d6efd;
+            font-weight: 600;
+        }}
+        
+        .card.border-warning {{
+            border-left: 4px solid #ffc107;
+        }}
+        
+        .card.border-success {{
+            border-left: 4px solid #198754;
+        }}
+        
+        .btn-group-vertical .btn {{
+            text-align: left;
+        }}
+        
+        @media (max-width: 768px) {{
+            .btn-group-vertical {{
+                flex-direction: row !important;
+            }}
+            
+            .btn-group-vertical .btn {{
+                margin-right: 5px;
+                margin-bottom: 0 !important;
+            }}
+        }}
+        </style>
+        '''
+        
+        return html_wrapper(f'Download Requests - {form["title"]}', content, get_navbar(), '')
+        
+    except Exception as e:
+        print(f"Error loading form download requests: {e}")
+        traceback.print_exc()
+        return html_wrapper('Error', f'''
+        <div class="alert alert-danger">
+            <h4>Error Loading Download Requests</h4>
+            <p>Error: {str(e)}</p>
+            <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+        </div>
+        ''', get_navbar(), '')
+    
+@app.route('/api/download-requests/<int:download_id>/revoke', methods=['POST'])
+@login_required
+@teacher_required
+def revoke_download_access(download_id):
+    """Revoke granted download access"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Verify permission
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('''
+                    SELECT rd.*, r.student_id, f.title, u.email as student_email, u.name as student_name
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE rd.id = %s AND rd.access_granted = TRUE
+                ''', (download_id,))
+            else:
+                cursor.execute('''
+                    SELECT rd.*, r.student_id, f.title, u.email as student_email, u.name as student_name
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE rd.id = %s AND rd.access_granted = TRUE AND f.created_by = %s
+                ''', (download_id, user_id))
+            
+            request_data = cursor.fetchone()
+            
+            if not request_data:
+                return jsonify({'success': False, 'error': 'Request not found or access denied'}), 404
+            
+            # Revoke access by deleting the record
+            cursor.execute('DELETE FROM response_downloads WHERE id = %s', (download_id,))
+            
+            # Create notification for student
+            cursor.execute('''
+                INSERT INTO notifications 
+                (user_id, title, message, type, link)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (request_data['student_id'], 
+                  'Download Access Revoked', 
+                  f'Download access revoked for "{request_data["title"]}" by {session["name"]}',
+                  'danger', 
+                  f'/my-responses'))
+            
+            connection.commit()
+        
+        connection.close()
+        
+        # Send email notification
+        if ENABLE_EMAIL_NOTIFICATIONS:
+            html_content = f'''
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #e74a3b;">Download Access Revoked</h2>
+                <p>Hello {request_data["student_name"]},</p>
+                <p>Your download access for <strong>{request_data["title"]}</strong> has been revoked.</p>
+                <div style="background: #fdf2f2; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                    <p><strong>Details:</strong></p>
+                    <p>Form: {request_data["title"]}</p>
+                    <p>Revoked By: {session["name"]}</p>
+                    <p>Revoked At: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+                </div>
+                <p>If you believe this was done in error, please contact your teacher or administrator.</p>
+            </div>
+            '''
+            send_email_async(request_data['student_email'], 'Download Access Revoked - FormMaster Pro', html_content)
+        
+        return jsonify({'success': True, 'message': 'Download access revoked'})
+        
+    except Exception as e:
+        print(f"Error revoking download access: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/manual-grant-download', methods=['POST'])
+@login_required
+@teacher_required
+def manual_grant_download():
+    """Manually grant download access to a response"""
+    try:
+        data = request.get_json()
+        response_id = data.get('response_id')
+        form_id = data.get('form_id')
+        
+        if not response_id or not form_id:
+            return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+        
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Verify the response exists and user has permission
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('''
+                    SELECT r.*, f.title, u.id as student_id, u.name as student_name, u.email as student_email
+                    FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE r.id = %s AND r.form_id = %s
+                ''', (response_id, form_id))
+            else:
+                cursor.execute('''
+                    SELECT r.*, f.title, u.id as student_id, u.name as student_name, u.email as student_email
+                    FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE r.id = %s AND r.form_id = %s AND f.created_by = %s
+                ''', (response_id, form_id, user_id))
+            
+            response_data = cursor.fetchone()
+            
+            if not response_data:
+                return jsonify({'success': False, 'error': 'Response not found or access denied'}), 404
+            
+            # Check if download entry already exists
+            cursor.execute('''
+                SELECT * FROM response_downloads 
+                WHERE response_id = %s AND student_id = %s
+            ''', (response_id, response_data['student_id']))
+            
+            existing = cursor.fetchone()
+            
+            if existing:
+                if existing['access_granted']:
+                    return jsonify({'success': False, 'error': 'Download access already granted'})
+                else:
+                    # Update existing pending request
+                    cursor.execute('''
+                        UPDATE response_downloads 
+                        SET access_granted = TRUE, 
+                            granted_by = %s, 
+                            granted_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                    ''', (user_id, existing['id']))
+            else:
+                # Create new download entry
+                download_token = generate_download_token()
+                cursor.execute('''
+                    INSERT INTO response_downloads 
+                    (response_id, student_id, form_id, access_granted, granted_by, granted_at, download_token)
+                    VALUES (%s, %s, %s, TRUE, %s, CURRENT_TIMESTAMP, %s)
+                ''', (response_id, response_data['student_id'], form_id, user_id, download_token))
+            
+            # Create notification for student
+            cursor.execute('''
+                INSERT INTO notifications 
+                (user_id, title, message, type, link)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (response_data['student_id'], 
+                  'Download Access Granted', 
+                  f'Download access granted for "{response_data["title"]}" by {session["name"]}',
+                  'success', 
+                  f'/my-responses/downloads'))
+            
+            connection.commit()
+        
+        connection.close()
+        
+        # Send email notification
+        if ENABLE_EMAIL_NOTIFICATIONS:
+            html_content = f'''
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #10b981;">Download Access Granted</h2>
+                <p>Hello {response_data["student_name"]},</p>
+                <p>Download access has been granted for your response to <strong>{response_data["title"]}</strong>.</p>
+                <div style="background: #f0f9ff; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                    <p><strong>Details:</strong></p>
+                    <p>Form: {response_data["title"]}</p>
+                    <p>Score: {response_data.get("score", 0)} ({response_data.get("percentage", 0)}%)</p>
+                    <p>Granted By: {session["name"]}</p>
+                    <p>Granted At: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+                </div>
+                <p>You can now download your response from the "My Results" page.</p>
+                <a href="http://{request.host}/my-responses/downloads" 
+                   style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px;">
+                    Download Now
+                </a>
+            </div>
+            '''
+            send_email_async(response_data['student_email'], 'Download Access Granted - FormMaster Pro', html_content)
+        
+        return jsonify({'success': True, 'message': 'Download access granted manually'})
+        
+    except Exception as e:
+        print(f"Error manually granting download access: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/responses/<int:response_id>/details', methods=['GET'])
+@login_required
+@teacher_required
+def get_response_details(response_id):
+    """Get detailed information about a response"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('''
+                    SELECT r.*, f.title as form_title, f.questions, 
+                           u.name as student_name, u.email as student_email,
+                           rd.access_granted, rd.granted_at, u2.name as granted_by_name
+                    FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    LEFT JOIN response_downloads rd ON r.id = rd.response_id
+                    LEFT JOIN users u2 ON rd.granted_by = u2.id
+                    WHERE r.id = %s
+                ''', (response_id,))
+            else:
+                cursor.execute('''
+                    SELECT r.*, f.title as form_title, f.questions, 
+                           u.name as student_name, u.email as student_email,
+                           rd.access_granted, rd.granted_at, u2.name as granted_by_name
+                    FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    LEFT JOIN response_downloads rd ON r.id = rd.response_id
+                    LEFT JOIN users u2 ON rd.granted_by = u2.id
+                    WHERE r.id = %s AND f.created_by = %s
+                ''', (response_id, user_id))
+            
+            response_data = cursor.fetchone()
+            
+            if not response_data:
+                connection.close()
+                return jsonify({'success': False, 'error': 'Response not found or access denied'}), 404
+        
+        connection.close()
+        
+        # Parse questions and answers
+        questions = json.loads(response_data['questions']) if response_data['questions'] else []
+        answers = json.loads(response_data['answers']) if response_data['answers'] else {}
+        
+        # Build HTML content
+        html_content = f'''
+        <div class="response-details">
+            <h4>{response_data['form_title']}</h4>
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <p><strong>Student:</strong> {response_data['student_name']}</p>
+                    <p><strong>Email:</strong> {response_data['student_email']}</p>
+                </div>
+                <div class="col-md-6">
+                    <p><strong>Score:</strong> {response_data.get('score', 0)} / {response_data.get('total_marks', 1)}</p>
+                    <p><strong>Percentage:</strong> {response_data.get('percentage', 0)}%</p>
+                </div>
+            </div>
+            
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5 class="mb-0">Submission Details</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>Submitted At:</strong> {response_data['submitted_at'].strftime('%Y-%m-%d %H:%M:%S') if response_data['submitted_at'] else 'N/A'}</p>
+                    <p><strong>Time Taken:</strong> {response_data.get('time_taken', 0)} seconds</p>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Questions & Answers</h5>
+                </div>
+                <div class="card-body">
+        '''
+        
+        for i, question in enumerate(questions, 1):
+            question_text = question.get('question', f'Question {i}')
+            question_type = question.get('type', 'text')
+            correct_answer = question.get('correct_answer', '')
+            marks = question.get('marks', 1)
+            
+            student_answer = answers.get(str(i), '')
+            is_correct = str(student_answer).strip().lower() == str(correct_answer).strip().lower()
+            
+            html_content += f'''
+                    <div class="question-item mb-4 p-3 {'bg-success bg-opacity-10' if is_correct else 'bg-danger bg-opacity-10'}">
+                        <h6>Question {i}: {question_text}</h6>
+                        <p><strong>Type:</strong> {question_type}</p>
+                        <p><strong>Marks:</strong> {marks}</p>
+                        <p><strong>Your Answer:</strong> {student_answer}</p>
+                        {f'<p><strong>Correct Answer:</strong> {correct_answer}</p>' if question_type != 'essay' else ''}
+                        <p><strong>Status:</strong> 
+                            <span class="badge {'bg-success' if is_correct else 'bg-danger'}">
+                                {'Correct' if is_correct else 'Incorrect'}
+                            </span>
+                        </p>
+                    </div>
+            '''
+        
+        html_content += '''
+                </div>
+            </div>
+            
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h5 class="mb-0">Download Status</h5>
+                </div>
+                <div class="card-body">
+        '''
+        
+        if response_data['access_granted']:
+            granted_at = response_data['granted_at'].strftime('%Y-%m-%d %H:%M:%S') if response_data['granted_at'] else 'N/A'
+            html_content += f'''
+                    <p class="text-success">
+                        <i class="fas fa-check-circle me-2"></i>
+                        <strong>Download Access Granted</strong>
+                    </p>
+                    <p><strong>Granted By:</strong> {response_data.get('granted_by_name', 'System')}</p>
+                    <p><strong>Granted At:</strong> {granted_at}</p>
+            '''
+        else:
+            html_content += '''
+                    <p class="text-warning">
+                        <i class="fas fa-clock me-2"></i>
+                        <strong>Download Access Pending or Not Requested</strong>
+                    </p>
+            '''
+        
+        html_content += '''
+                </div>
+            </div>
+        </div>
+        '''
+        
+        return jsonify({'success': True, 'html': html_content})
+        
+    except Exception as e:
+        print(f"Error getting response details: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+    
+@app.route('/api/my-forms-download-requests', methods=['GET'])
+@login_required
+def my_forms_download_requests():
+    """Get forms with pending download requests for the current teacher/admin"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        if user_role not in ['teacher', 'admin', 'super_admin']:
+            return jsonify({'success': False, 'error': 'Unauthorized access'}), 403
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('''
+                    SELECT f.id, f.title, 
+                           COUNT(DISTINCT rd.id) as pending_downloads
+                    FROM forms f
+                    LEFT JOIN response_downloads rd ON f.id = rd.form_id 
+                        AND rd.access_granted = FALSE
+                    GROUP BY f.id
+                    HAVING pending_downloads > 0
+                    ORDER BY pending_downloads DESC
+                ''')
+            else:
+                cursor.execute('''
+                    SELECT f.id, f.title, 
+                           COUNT(DISTINCT rd.id) as pending_downloads
+                    FROM forms f
+                    LEFT JOIN response_downloads rd ON f.id = rd.form_id 
+                        AND rd.access_granted = FALSE
+                    WHERE f.created_by = %s
+                    GROUP BY f.id
+                    HAVING pending_downloads > 0
+                    ORDER BY pending_downloads DESC
+                ''', (user_id,))
+            
+            forms = cursor.fetchall()
+        
+        connection.close()
+        
+        return jsonify({
+            'success': True,
+            'forms': forms
+        })
+        
+    except Exception as e:
+        print(f"Error getting forms with download requests: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/response-downloads', methods=['GET'])
+@login_required
+def view_response_downloads():  # CHANGED NAME from response_downloads
+    """View pending download requests"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        # Get pending requests based on user role
+        if user_role in ['admin', 'super_admin']:
+            pending_requests = get_pending_download_requests()
+        elif user_role == 'teacher':
+            pending_requests = get_pending_download_requests(form_owner_id=user_id)
+        else:
+            pending_requests = []
+        
+        # Format the data for display
+        requests_html = ''
+        if pending_requests:
+            for req in pending_requests:
+                requests_html += f'''
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-8">
+                                <h5 class="card-title">{req.get('form_title', 'Unknown Form')}</h5>
+                                <p class="card-text">
+                                    <strong>Student:</strong> {req.get('student_name', 'Unknown')} 
+                                    ({req.get('student_email', 'N/A')})<br>
+                                    <strong>Score:</strong> {req.get('score', 0)}/{req.get('total_marks', 1)} 
+                                    ({req.get('percentage', 0)}%)<br>
+                                    <strong>Submitted:</strong> {req.get('submitted_at', 'N/A')}<br>
+                                    <strong>Requested:</strong> {req.get('created_at', 'N/A')}
+                                </p>
+                            </div>
+                            <div class="col-md-4 text-end">
+                                <div class="btn-group">
+                                    <button onclick="grantDownload({req.get('id')})" class="btn btn-success btn-sm">
+                                        <i class="fas fa-check"></i> Grant Access
+                                    </button>
+                                    <button onclick="denyDownload({req.get('id')})" class="btn btn-danger btn-sm">
+                                        <i class="fas fa-times"></i> Deny
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                '''
+        else:
+            requests_html = '''
+            <div class="alert alert-info">
+                <i class="fas fa-info-circle me-2"></i>
+                No pending download requests found.
+            </div>
+            '''
+        
+        content = f'''
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h4 class="mb-0">
+                            <i class="fas fa-download me-2"></i>Pending Download Requests
+                        </h4>
+                    </div>
+                    <div class="card-body">
+                        {requests_html}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+        function grantDownload(downloadId) {{
+            if (confirm('Are you sure you want to grant download access?')) {{
+                fetch(`/api/download-requests/${{downloadId}}/grant`, {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json'
+                    }}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        alert('Download access granted successfully!');
+                        location.reload();
+                    }} else {{
+                        alert('Error: ' + data.error);
+                    }}
+                }})
+                .catch(error => {{
+                    alert('Network error: ' + error);
+                }});
+            }}
+        }}
+        
+        function denyDownload(downloadId) {{
+            if (confirm('Are you sure you want to deny this download request?')) {{
+                fetch(`/api/download-requests/${{downloadId}}/deny`, {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json'
+                    }}
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        alert('Download request denied.');
+                        location.reload();
+                    }} else {{
+                        alert('Error: ' + data.error);
+                    }}
+                }})
+                .catch(error => {{
+                    alert('Network error: ' + error);
+                }});
+            }}
+        }}
+        </script>
+        '''
+        
+        return html_wrapper('Download Requests', content, get_navbar(), '')
+        
+    except Exception as e:
+        print(f"Error loading download requests: {e}")
+        traceback.print_exc()
+        return html_wrapper('Error', f'''
+        <div class="alert alert-danger">
+            <h4>Error Loading Download Requests</h4>
+            <p>Error: {str(e)}</p>
+            <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+        </div>
+        ''', get_navbar(), '')
+    
+@app.route('/api/download-requests/<int:download_id>/grant', methods=['POST'])
+@login_required
+@teacher_required
+def grant_download_request(download_id):
+    """Grant download access"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Verify the user has permission to grant this request
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('''
+                    SELECT rd.*, f.title, u.name as student_name, u.email as student_email
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE rd.id = %s
+                ''', (download_id,))
+            else:
+                cursor.execute('''
+                    SELECT rd.*, f.title, u.name as student_name, u.email as student_email
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE rd.id = %s AND f.created_by = %s
+                ''', (download_id, user_id))
+            
+            request_data = cursor.fetchone()
+            
+            if not request_data:
+                return jsonify({'success': False, 'error': 'Request not found or access denied'}), 404
+            
+            # Grant access
+            cursor.execute('''
+                UPDATE response_downloads 
+                SET access_granted = TRUE, 
+                    granted_by = %s, 
+                    granted_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            ''', (user_id, download_id))
+            
+            # Create notification for student
+            cursor.execute('''
+                INSERT INTO notifications 
+                (user_id, title, message, type, link)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (request_data['student_id'], 
+                  'Download Access Granted', 
+                  f'Download access granted for "{request_data["title"]}"',
+                  'success', 
+                  f'/my-responses/downloads'))
+            
+            connection.commit()
+        
+        connection.close()
+        
+        # Send email notification
+        if ENABLE_EMAIL_NOTIFICATIONS:
+            html_content = f'''
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #10b981;">Download Access Granted</h2>
+                <p>Hello {request_data["student_name"]},</p>
+                <p>Your request to download the response for <strong>{request_data["title"]}</strong> has been approved.</p>
+                <div style="background: #f0f9ff; padding: 15px; border-radius: 10px; margin: 20px 0;">
+                    <p><strong>Details:</strong></p>
+                    <p>Form: {request_data["title"]}</p>
+                    <p>Approved By: {session["name"]}</p>
+                    <p>Approved At: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+                </div>
+                <p>You can now download your response from the "My Results" page.</p>
+                <a href="http://{request.host}/my-responses/downloads" 
+                   style="display: inline-block; padding: 10px 20px; background: #10b981; color: white; text-decoration: none; border-radius: 5px;">
+                    Download Now
+                </a>
+            </div>
+            '''
+            send_email_async(request_data['student_email'], 'Download Access Granted - FormMaster Pro', html_content)
+        
+        return jsonify({'success': True, 'message': 'Download access granted'})
+        
+    except Exception as e:
+        print(f"Error granting download request: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/download-requests/<int:download_id>/deny', methods=['POST'])
+@login_required
+@teacher_required
+def deny_download_request(download_id):
+    """Deny download access"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Verify permission
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('''
+                    SELECT rd.*, f.title, u.name as student_name, u.email as student_email
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE rd.id = %s
+                ''', (download_id,))
+            else:
+                cursor.execute('''
+                    SELECT rd.*, f.title, u.name as student_name, u.email as student_email
+                    FROM response_downloads rd
+                    JOIN responses r ON rd.response_id = r.id
+                    JOIN forms f ON r.form_id = f.id
+                    JOIN users u ON r.student_id = u.id
+                    WHERE rd.id = %s AND f.created_by = %s
+                ''', (download_id, user_id))
+            
+            request_data = cursor.fetchone()
+            
+            if not request_data:
+                return jsonify({'success': False, 'error': 'Request not found or access denied'}), 404
+            
+            # Delete the download request
+            cursor.execute('DELETE FROM response_downloads WHERE id = %s', (download_id,))
+            
+            # Create notification for student
+            cursor.execute('''
+                INSERT INTO notifications 
+                (user_id, title, message, type, link)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (request_data['student_id'], 
+                  'Download Request Denied', 
+                  f'Your download request for "{request_data["title"]}" was denied by {session["name"]}',
+                  'danger', 
+                  f'/my-responses'))
+            
+            connection.commit()
+        
+        connection.close()
+        
+        return jsonify({'success': True, 'message': 'Download request denied'})
+        
+    except Exception as e:
+        print(f"Error denying download request: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 def get_navbar():
@@ -4932,40 +6211,7 @@ def get_navbar():
         }
     </script>
     '''
-@app.route('/api/get-response/<int:form_id>', methods=['GET'])
-@login_required
-def get_response_by_form_id(form_id):
-    """Get response ID for a specific form and student"""
-    try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            cursor.execute('''
-                SELECT r.id as response_id
-                FROM responses r
-                WHERE r.form_id = %s AND r.student_id = %s
-                LIMIT 1
-            ''', (form_id, session['user_id']))
-            response = cursor.fetchone()
-        connection.close()
-        
-        if response:
-            return jsonify({
-                'success': True,
-                'response_id': response['response_id']
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'No response found for this form'
-            }), 404
-            
-    except Exception as e:
-        print(f"Error getting response: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-        
+
 @app.route('/profile')
 @login_required
 def myprofile():
@@ -5714,14 +6960,11 @@ def settings():
                                             <input type="email" class="form-control" name="email" 
                                                    value="''' + (user['email'] if user else '') + '''" required>
                                         </div>
-                                        # In the settings HTML, change the phone input section to:
-                                        
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Phone Number</label>
                                             <input type="tel" class="form-control" name="phone" 
-                                                value="">
+                                                   value="''' + (user['phone'] if user and user['phone'] else '') + '''">
                                         </div>
-                                        
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Department</label>
                                             <input type="text" class="form-control" name="department" 
@@ -6169,6 +7412,42 @@ def settings():
     
     return settings_html
 
+@app.route('/api/get-response/<int:form_id>', methods=['GET'])
+@login_required
+def get_response_by_form_id(form_id):
+    """Get response ID for a specific form and student"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT r.id as response_id
+                FROM responses r
+                WHERE r.form_id = %s AND r.student_id = %s
+                LIMIT 1
+            ''', (form_id, session['user_id']))
+            response = cursor.fetchone()
+        connection.close()
+        
+        if response:
+            return jsonify({
+                'success': True,
+                'response_id': response['response_id']
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No response found for this form'
+            }), 404
+            
+    except Exception as e:
+        print(f"Error getting response: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+# ======================
+# API ENDPOINTS FOR SETTINGS
+# ======================
 
 @app.route('/api/settings/update-profile', methods=['POST'])
 def update_profile():
@@ -6178,28 +7457,18 @@ def update_profile():
     user_id = session['user_id']
     name = request.form.get('name')
     email = request.form.get('email')
-    phone = request.form.get('phone', '')  # Default to empty string
+    phone = request.form.get('phone')
     department = request.form.get('department')
     
     try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            # Check if phone column exists
-            cursor.execute("SHOW COLUMNS FROM users LIKE 'phone'")
-            phone_exists = cursor.fetchone()
-            
-            if phone_exists:
-                cursor.execute("""
-                    UPDATE users 
-                    SET name = %s, email = %s, phone = %s, department = %s 
-                    WHERE id = %s
-                """, (name, email, phone, department, user_id))
-            else:
-                cursor.execute("""
-                    UPDATE users 
-                    SET name = %s, email = %s, department = %s 
-                    WHERE id = %s
-                """, (name, email, department, user_id))
+        cursor = mysql.connection.cursor()
+        cursor.execute("""
+            UPDATE users 
+            SET name = %s, email = %s, phone = %s, department = %s 
+            WHERE id = %s
+        """, (name, email, phone, department, user_id))
+        mysql.connection.commit()
+        cursor.close()
         
         # Update session data
         session['name'] = name
@@ -6208,7 +7477,6 @@ def update_profile():
         
         return jsonify({'success': True, 'message': 'Profile updated successfully'})
     except Exception as e:
-        print(f"Update profile error: {e}")
         return jsonify({'success': False, 'message': str(e)})
 
 @app.route('/api/settings/change-password', methods=['POST'])
@@ -6225,10 +7493,9 @@ def change_password():
         return jsonify({'success': False, 'message': 'Passwords do not match'})
     
     try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT password FROM users WHERE id = %s", (user_id,))
-            result = cursor.fetchone()
+        cursor = mysql.connection.cursor()
+        cursor.execute("SELECT password FROM users WHERE id = %s", (user_id,))
+        result = cursor.fetchone()
         
         if not result:
             return jsonify({'success': False, 'message': 'User not found'})
@@ -6238,10 +7505,9 @@ def change_password():
             return jsonify({'success': False, 'message': 'Current password is incorrect'})
         
         # Update password
-        with connection.cursor() as cursor:
-            cursor.execute("UPDATE users SET password = %s WHERE id = %s", (new_password, user_id))
-            connection.commit()
-        connection.close()
+        cursor.execute("UPDATE users SET password = %s WHERE id = %s", (new_password, user_id))
+        mysql.connection.commit()
+        cursor.close()
         
         return jsonify({'success': True, 'message': 'Password changed successfully'})
     except Exception as e:
@@ -6260,34 +7526,33 @@ def update_notification_preferences():
     weekly_digest = request.form.get('weekly_digest') == 'true'
     
     try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            # Check if table exists, create if not
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS notification_preferences (
-                    user_id INT PRIMARY KEY,
-                    email_notifications BOOLEAN DEFAULT TRUE,
-                    push_notifications BOOLEAN DEFAULT TRUE,
-                    form_updates BOOLEAN DEFAULT TRUE,
-                    deadline_alerts BOOLEAN DEFAULT TRUE,
-                    weekly_digest BOOLEAN DEFAULT FALSE,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            """)
-            
-            cursor.execute("""
-                INSERT INTO notification_preferences 
-                (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                email_notifications = VALUES(email_notifications),
-                push_notifications = VALUES(push_notifications),
-                form_updates = VALUES(form_updates),
-                deadline_alerts = VALUES(deadline_alerts),
-                weekly_digest = VALUES(weekly_digest)
-            """, (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest))
-            connection.commit()
-        connection.close()
+        cursor = mysql.connection.cursor()
+        # Check if table exists, create if not
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                user_id INT PRIMARY KEY,
+                email_notifications BOOLEAN DEFAULT TRUE,
+                push_notifications BOOLEAN DEFAULT TRUE,
+                form_updates BOOLEAN DEFAULT TRUE,
+                deadline_alerts BOOLEAN DEFAULT TRUE,
+                weekly_digest BOOLEAN DEFAULT FALSE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        
+        cursor.execute("""
+            INSERT INTO notification_preferences 
+            (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+            email_notifications = VALUES(email_notifications),
+            push_notifications = VALUES(push_notifications),
+            form_updates = VALUES(form_updates),
+            deadline_alerts = VALUES(deadline_alerts),
+            weekly_digest = VALUES(weekly_digest)
+        """, (user_id, email_notifications, push_notifications, form_updates, deadline_alerts, weekly_digest))
+        mysql.connection.commit()
+        cursor.close()
         
         return jsonify({'success': True, 'message': 'Notification preferences updated'})
     except Exception as e:
@@ -6301,6 +7566,8 @@ def terminate_session():
     session_id = request.form.get('session_id')
     # In a real app, you would invalidate the session token in database
     return jsonify({'success': True, 'message': 'Session terminated'})
+
+
 
 @app.route('/create-form', methods=['GET', 'POST'])
 @login_required
@@ -9321,216 +10588,6 @@ def my_response_downloads():
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
 
-@app.route('/form/<int:form_id>/response-downloads')
-@teacher_required
-def manage_response_downloads(form_id):
-    """Manage response download requests for a form"""
-    try:
-        connection = get_db()
-        with connection.cursor() as cursor:
-            # Check if user owns the form or is admin
-            cursor.execute('SELECT created_by FROM forms WHERE id = %s', (form_id,))
-            form = cursor.fetchone()
-            
-            if not form:
-                connection.close()
-                return html_wrapper('Error', '<div class="alert alert-danger">Form not found</div>', get_navbar(), '')
-            
-            if form['created_by'] != session['user_id'] and session['role'] not in ['admin', 'super_admin']:
-                connection.close()
-                return html_wrapper('Error', '<div class="alert alert-danger">Access denied</div>', get_navbar(), '')
-            
-            # Get pending download requests
-            cursor.execute('''
-                SELECT rd.*, r.student_id, u.name as student_name, 
-                       u.email as student_email, r.score, r.total_marks,
-                       r.percentage, r.submitted_at, f.title as form_title
-                FROM response_downloads rd
-                JOIN responses r ON rd.response_id = r.id
-                JOIN forms f ON rd.form_id = f.id
-                JOIN users u ON rd.student_id = u.id
-                WHERE rd.form_id = %s AND rd.access_granted = FALSE
-                ORDER BY rd.created_at DESC
-            ''', (form_id,))
-            pending_requests = cursor.fetchall()
-            
-            # Get granted downloads
-            cursor.execute('''
-                SELECT rd.*, r.student_id, u.name as student_name, 
-                       u.email as student_email, r.score, r.total_marks,
-                       r.percentage, r.submitted_at, f.title as form_title,
-                       u2.name as granted_by_name, rd.granted_at, rd.download_count
-                FROM response_downloads rd
-                JOIN responses r ON rd.response_id = r.id
-                JOIN forms f ON rd.form_id = f.id
-                JOIN users u ON rd.student_id = u.id
-                LEFT JOIN users u2 ON rd.granted_by = u2.id
-                WHERE rd.form_id = %s AND rd.access_granted = TRUE
-                ORDER BY rd.granted_at DESC
-            ''', (form_id,))
-            granted_downloads = cursor.fetchall()
-            
-            # Get form details
-            cursor.execute('SELECT title, form_type FROM forms WHERE id = %s', (form_id,))
-            form_details = cursor.fetchone()
-        
-        connection.close()
-        
-        pending_html = ''
-        for req in pending_requests:
-            pending_html += f'''
-            <div class="card mb-3">
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col-md-8">
-                            <h6>{req['student_name']}</h6>
-                            <p class="text-muted mb-1">
-                                <i class="fas fa-envelope me-1"></i>{req['student_email']}<br>
-                                <i class="fas fa-chart-bar me-1"></i>Score: {req['score']}/{req['total_marks']} ({req['percentage']}%)<br>
-                                <i class="fas fa-calendar me-1"></i>Submitted: {req['submitted_at'].strftime('%Y-%m-%d')}
-                            </p>
-                        </div>
-                        <div class="col-md-4 text-end">
-                            <button onclick="handleDownloadRequest({req['id']}, 'approve')" class="btn btn-success btn-sm mb-2">
-                                <i class="fas fa-check me-1"></i>Approve
-                            </button>
-                            <button onclick="handleDownloadRequest({req['id']}, 'reject')" class="btn btn-danger btn-sm">
-                                <i class="fas fa-times me-1"></i>Reject
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            '''
-        
-        if not pending_html:
-            pending_html = '<div class="alert alert-info">No pending download requests.</div>'
-        
-        granted_html = ''
-        for download in granted_downloads:
-            granted_html += f'''
-            <tr>
-                <td>{download['student_name']}</td>
-                <td>{download['student_email']}</td>
-                <td>{download['score']}/{download['total_marks']} ({download['percentage']}%)</td>
-                <td>
-                    <span class="badge bg-success">Granted</span><br>
-                    <small>{download['granted_at'].strftime('%Y-%m-%d') if download['granted_at'] else 'N/A'}</small>
-                </td>
-                <td>{download['granted_by_name'] or 'Auto'}</td>
-                <td>{download['download_count']}</td>
-                <td>
-                    <button onclick="revokeDownload({download['id']})" class="btn btn-sm btn-outline-danger">
-                        <i class="fas fa-ban"></i> Revoke
-                    </button>
-                </td>
-            </tr>
-            '''
-        
-        content = f'''
-        <div class="mb-4">
-            <h2 class="text-white">Manage Response Downloads</h2>
-            <p class="text-white-50">Form: {form_details['title']} ({form_details['form_type'].upper()})</p>
-        </div>
-        
-        <div class="row">
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0">
-                            <i class="fas fa-clock me-2"></i>Pending Requests ({len(pending_requests)})
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        {pending_html}
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0">
-                            <i class="fas fa-check-circle me-2"></i>Granted Downloads ({len(granted_downloads)})
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>Student</th>
-                                        <th>Email</th>
-                                        <th>Score</th>
-                                        <th>Status</th>
-                                        <th>Granted By</th>
-                                        <th>Downloads</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {granted_html}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        '''
-        
-        scripts = '''
-        <script>
-            function handleDownloadRequest(downloadId, action) {
-                const actionText = action === 'approve' ? 'approve' : 'reject';
-                if (confirm(`Are you sure you want to ${actionText} this download request?`)) {
-                    fetch('/handle-download-request/' + downloadId + '/' + action, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'}
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            alert(`Download request ${actionText}d successfully!`);
-                            window.location.reload();
-                        } else {
-                            alert('Error: ' + data.error);
-                        }
-                    })
-                    .catch(error => {
-                        alert('Network error: ' + error);
-                    });
-                }
-            }
-            
-            function revokeDownload(downloadId) {
-                if (confirm('Revoke download access? The student will no longer be able to download this response.')) {
-                    fetch('/revoke-download/' + downloadId, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'}
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            alert('Download access revoked!');
-                            window.location.reload();
-                        } else {
-                            alert('Error: ' + data.error);
-                        }
-                    })
-                    .catch(error => {
-                        alert('Network error: ' + error);
-                    });
-                }
-            }
-        </script>
-        '''
-        
-        return html_wrapper('Manage Downloads', content, get_navbar(), scripts)
-        
-    except Exception as e:
-        print(f"Manage response downloads error: {e}")
-        traceback.print_exc()
-        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
 
 @app.route('/request-download/<int:response_id>', methods=['POST'])
 @login_required
@@ -13466,7 +14523,146 @@ def logout():
     
     # Redirect immediately
     return redirect('/login')
-
+@app.route('/fast-submit-form', methods=['POST'])
+@login_required
+@student_required
+def fast_submit_form():
+    """Fast form submission with minimal processing"""
+    try:
+        if not request.is_json:
+            return jsonify({'success': False, 'error': 'JSON data required'}), 400
+        
+        data = request.get_json()
+        form_id = data.get('form_id')
+        answers = data.get('answers')
+        time_taken = data.get('time_taken', 0)
+        
+        if not form_id or not answers:
+            return jsonify({'success': False, 'error': 'Missing required data'}), 400
+        
+        connection = get_db()
+        
+        try:
+            with connection.cursor() as cursor:
+                # Get form details quickly
+                cursor.execute('''
+                    SELECT id, questions, created_by, title, form_type
+                    FROM forms 
+                    WHERE id = %s
+                ''', (form_id,))
+                form = cursor.fetchone()
+                
+                if not form:
+                    return jsonify({'success': False, 'error': 'Form not found'}), 404
+                
+                # Check if already submitted
+                cursor.execute('''
+                    SELECT id FROM responses 
+                    WHERE form_id = %s AND student_id = %s
+                ''', (form_id, session['user_id']))
+                if cursor.fetchone():
+                    return jsonify({'success': False, 'error': 'Already submitted'}), 400
+                
+                # Calculate score in background thread for speed
+                def calculate_score_in_background(form_id, student_id, answers, time_taken, form_title):
+                    try:
+                        conn = get_db()
+                        with conn.cursor() as bg_cursor:
+                            # Get questions for scoring
+                            bg_cursor.execute('SELECT questions FROM forms WHERE id = %s', (form_id,))
+                            form_data = bg_cursor.fetchone()
+                            
+                            if form_data and form_data['questions']:
+                                questions = json.loads(form_data['questions']) if isinstance(form_data['questions'], str) else form_data['questions']
+                                score = 0
+                                total_marks = 0
+                                
+                                # Quick scoring
+                                for q in questions:
+                                    if q.get('type') in ['mcq', 'truefalse']:
+                                        total_marks += 1
+                                        q_id = str(q.get('id'))
+                                        correct_answer = q.get('correctAnswer', '')
+                                        user_answer = answers.get(q_id, '')
+                                        
+                                        if user_answer and str(user_answer).strip().lower() == str(correct_answer).strip().lower():
+                                            score += 1
+                                
+                                percentage = (score / total_marks * 100) if total_marks > 0 else 0
+                                
+                                # Save response
+                                bg_cursor.execute('''
+                                    INSERT INTO responses 
+                                    (form_id, student_id, answers, score, total_marks, percentage, time_taken)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                ''', (form_id, student_id, json.dumps(answers), score, total_marks, round(percentage, 2), time_taken))
+                                
+                                # Update assignments if exists
+                                bg_cursor.execute('''
+                                    UPDATE assignments 
+                                    SET is_completed = TRUE 
+                                    WHERE form_id = %s AND student_id = %s
+                                ''', (form_id, student_id))
+                                
+                                # Create notification
+                                bg_cursor.execute('''
+                                    INSERT INTO notifications 
+                                    (user_id, title, message, type, link)
+                                    VALUES (%s, %s, %s, %s, %s)
+                                ''', (session['user_id'], 'Form Submitted', 
+                                      f'You submitted "{form_title}" with score: {round(percentage, 2)}%', 
+                                      'success', '/my-responses'))
+                                
+                                # Notify teacher
+                                bg_cursor.execute('SELECT created_by FROM forms WHERE id = %s', (form_id,))
+                                form_creator = bg_cursor.fetchone()
+                                if form_creator:
+                                    bg_cursor.execute('''
+                                        INSERT INTO notifications 
+                                        (user_id, title, message, type, link)
+                                        VALUES (%s, %s, %s, %s, %s)
+                                    ''', (form_creator['created_by'], 'New Submission', 
+                                          f'Student {session["name"]} submitted "{form_title}"', 
+                                          'info', f'/form/{form_id}/responses'))
+                                
+                                conn.commit()
+                                
+                                # Create download permission entry in background
+                                download_token, form_details = create_response_download_entry(
+                                    bg_cursor.lastrowid, session['user_id'], form_id
+                                )
+                                
+                    except Exception as e:
+                        print(f"Background scoring error: {e}")
+                    finally:
+                        if 'conn' in locals():
+                            conn.close()
+                
+                # Start background scoring immediately
+                threading.Thread(target=calculate_score_in_background, args=(
+                    form_id, session['user_id'], answers, time_taken, form['title']
+                ), daemon=True).start()
+                
+                # Return immediate success without waiting for scoring
+                connection.commit()
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Form submitted successfully!',
+                    'redirect': '/my-responses'
+                })
+                
+        except Exception as e:
+            connection.rollback()
+            print(f"Fast submit error: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            connection.close()
+            
+    except Exception as e:
+        print(f"Fast submit error: {e}")
+        return jsonify({'success': False, 'error': 'Submission failed'}), 500
+        
 # Add error handlers
 @app.errorhandler(404)
 def page_not_found(e):
@@ -13515,32 +14711,6 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

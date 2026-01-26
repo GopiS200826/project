@@ -1,7 +1,16 @@
+# Secure config files
+secret.key
+config.enc
+secure_config.py
+
+# Environment files
 .env
-__pycache__/
-*.pyc
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -64,7 +64,7 @@ try:
         app.secret_key = config.get('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
         
         # Email config (optional)
-        EMAIL_USER = config.get('EMAIL_USER', 'gopi200026@gmail.com')
+        EMAIL_USER = config.get('EMAIL_USER', 'gamergopi26@gmail.com')
         EMAIL_PASSWORD = config.get('EMAIL_PASSWORD', 'laku neok xexr croj')
         
         print("✅ Loaded configuration from secure file")
@@ -13489,6 +13489,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

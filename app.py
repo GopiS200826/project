@@ -41,75 +41,129 @@ OTP_LENGTH = 6
 #MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
 #MYSQL_DB = 'railway'
 
-# Check if using Railway's managed MySQL
+
+
+# Get database configuration from environment variables
 def get_mysql_config():
-    # Railway's managed MySQL uses these variable names:
-    railway_mysql_host = os.environ.get('MYSQLHOST')
+    """Get MySQL configuration from Railway environment variables"""
+    # Try Railway's standard MySQL variables first
+    railway_host = os.environ.get('MYSQLHOST')
     
-    if railway_mysql_host:
-        # Using Railway's managed MySQL
+    if railway_host:
+        # Using Railway's managed MySQL service
+        print("🚀 Using Railway's managed MySQL service")
         return {
-            'host': railway_mysql_host,
+            'host': railway_host,
             'user': os.environ.get('MYSQLUSER'),
             'password': os.environ.get('MYSQLPASSWORD'),
             'database': os.environ.get('MYSQLDATABASE'),
-            'port': os.environ.get('MYSQLPORT', 3306)
+            'port': int(os.environ.get('MYSQLPORT', 3306))
         }
     else:
-        # Using your custom MySQL (your current setup)
+        # Fallback to custom MySQL variables
+        print("⚠️ Using custom MySQL configuration")
         return {
             'host': os.environ.get('MYSQL_HOST', 'localhost'),
             'user': os.environ.get('MYSQL_USER', 'root'),
             'password': os.environ.get('MYSQL_PASSWORD', ''),
-            'database': os.environ.get('MYSQL_DB', 'mydb'),
-            'port': 3306
+            'database': os.environ.get('MYSQL_DB', 'railway'),
+            'port': int(os.environ.get('MYSQL_PORT', 3306))
         }
 
-# For Railway's MySQL service (if using Railway's managed MySQL)
-# Railway provides these as environment variables automatically:
-# MYSQLHOST, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE, MYSQLPORT
-
-def get_railway_mysql_config():
-    """Get MySQL config from Railway's provided variables"""
-    # Check if Railway's MySQL service variables exist
-    railway_mysql_host = os.environ.get('MYSQLHOST')
-    if railway_mysql_host:
-        # Use Railway's managed MySQL
-        return {
-            'host': railway_mysql_host,
-            'user': os.environ.get('MYSQLUSER'),
-            'password': os.environ.get('MYSQLPASSWORD'),
-            'database': os.environ.get('MYSQLDATABASE'),
-            'port': os.environ.get('MYSQLPORT', 3306)
-        }
-    else:
-        # Use your custom MySQL variables
-        return {
-            'host': MYSQL_HOST,
-            'user': MYSQL_USER,
-            'password': MYSQL_PASSWORD,
-            'database': MYSQL_DB,
-            'port': 3306  # default MySQL port
-        }
-
-def create_mysql_connection():
-    import mysql.connector
-    
+# Test database connection
+def test_database_connection():
+    """Test database connection with current configuration"""
     try:
-        config = get_railway_mysql_config()
+        config = get_mysql_config()
+        print(f"📊 Database Configuration:")
+        print(f"   Host: {config['host']}")
+        print(f"   User: {config['user']}")
+        print(f"   Database: {config['database']}")
+        print(f"   Port: {config['port']}")
         
         connection = mysql.connector.connect(
             host=config['host'],
             user=config['user'],
             password=config['password'],
             database=config['database'],
-            port=config['port']
+            port=config['port'],
+            connect_timeout=5
         )
-        print("✅ Database connection established!")
-        return connection
+        
+        if connection.is_connected():
+            print("✅ Database connection successful!")
+            connection.close()
+            return True
+        else:
+            print("❌ Database connection failed")
+            return False
+            
     except Exception as e:
-        print(f"❌ Error connecting to database: {e}")
-        return None
+        print(f"❌ Database connection error: {e}")
+        return False
+
+# Update get_db() function to use the new configuration
+def get_db():
+    """Get database connection with error handling"""
+    try:
+        config = get_mysql_config()
+        
+        connection = mysql.connector.connect(
+            host=config['host'],
+            user=config['user'],
+            password=config['password'],
+            database=config['database'],
+            port=config['port'],
+            charset='utf8mb4',
+            autocommit=False
+        )
+        
+        return connection
+        
+    except mysql.connector.Error as e:
+        print(f"❌ Database connection error: {e}")
+        traceback.print_exc()
+        
+        # Try to create database if it doesn't exist
+        try:
+            print("🔄 Attempting to create database...")
+            config = get_mysql_config()
+            
+            # Connect without database specified
+            connection = mysql.connector.connect(
+                host=config['host'],
+                user=config['user'],
+                password=config['password'],
+                port=config['port'],
+                charset='utf8mb4'
+            )
+            
+            cursor = connection.cursor()
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {config['database']}")
+            cursor.execute(f"USE {config['database']}")
+            connection.commit()
+            cursor.close()
+            connection.close()
+            
+            # Try connecting again with database
+            print("🔄 Reconnecting with database...")
+            connection = mysql.connector.connect(
+                host=config['host'],
+                user=config['user'],
+                password=config['password'],
+                database=config['database'],
+                port=config['port'],
+                charset='utf8mb4',
+                autocommit=False
+            )
+            
+            print(f"✅ Successfully created and connected to database: {config['database']}")
+            return connection
+            
+        except Exception as e2:
+            print(f"❌ Failed to create database: {e2}")
+            traceback.print_exc()
+            raise
 
 # Validation (optional)
 required_vars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
@@ -534,13 +588,16 @@ def send_email(to_email, subject, html_content):
 
 def init_db():
     try:
+        config = get_mysql_config()
+        print(f"🔧 Initializing database: {config['database']}")
+        
         # First check if database exists
-        connection = pymysql.connect(
-            host=MYSQL_HOST,
-            user=MYSQL_USER,
-            password=MYSQL_PASSWORD,
-            charset='utf8mb4',
-            cursorclass=pymysql.cursors.DictCursor
+        connection = mysql.connector.connect(
+            host=config['host'],
+            user=config['user'],
+            password=config['password'],
+            port=config['port'],
+            charset='utf8mb4'
         )
         
         with connection.cursor() as cursor:
@@ -13501,6 +13558,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

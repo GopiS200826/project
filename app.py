@@ -41,13 +41,59 @@ OTP_LENGTH = 6
 #MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
 #MYSQL_DB = 'railway'
 
-# Database configuration
-MYSQL_HOST = os.getenv('MYSQL_HOST')
-MYSQL_USER = os.getenv('MYSQL_USER')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
-MYSQL_DB = os.getenv('MYSQL_DB')
-ADMIN_PASSWORD1 = os.getenv('ADMIN_PASSWORD')
-SUPER_ADMIN_PASSWORD1 = os.getenv('SUPER_ADMIN_PASSWORD')
+# Get environment variables (Railway automatically injects them)
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
+MYSQL_DB = os.environ.get('MYSQL_DB')
+MYSQL_HOST = os.environ.get('MYSQL_HOST')
+MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD')
+MYSQL_USER = os.environ.get('MYSQL_USER')
+SUPER_ADMIN_PASSWORD = os.environ.get('SUPER_ADMIN_PASSWORD')
+
+# For Railway's MySQL service (if using Railway's managed MySQL)
+# Railway provides these as environment variables automatically:
+# MYSQLHOST, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE, MYSQLPORT
+
+def get_railway_mysql_config():
+    """Get MySQL config from Railway's provided variables"""
+    # Check if Railway's MySQL service variables exist
+    railway_mysql_host = os.environ.get('MYSQLHOST')
+    if railway_mysql_host:
+        # Use Railway's managed MySQL
+        return {
+            'host': railway_mysql_host,
+            'user': os.environ.get('MYSQLUSER'),
+            'password': os.environ.get('MYSQLPASSWORD'),
+            'database': os.environ.get('MYSQLDATABASE'),
+            'port': os.environ.get('MYSQLPORT', 3306)
+        }
+    else:
+        # Use your custom MySQL variables
+        return {
+            'host': MYSQL_HOST,
+            'user': MYSQL_USER,
+            'password': MYSQL_PASSWORD,
+            'database': MYSQL_DB,
+            'port': 3306  # default MySQL port
+        }
+
+def create_mysql_connection():
+    import mysql.connector
+    
+    try:
+        config = get_railway_mysql_config()
+        
+        connection = mysql.connector.connect(
+            host=config['host'],
+            user=config['user'],
+            password=config['password'],
+            database=config['database'],
+            port=config['port']
+        )
+        print("✅ Database connection established!")
+        return connection
+    except Exception as e:
+        print(f"❌ Error connecting to database: {e}")
+        return None
 
 # Validation (optional)
 required_vars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DB']
@@ -13439,6 +13485,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

@@ -43,24 +43,28 @@ OTP_LENGTH = 6
 
 
 
-# Get database configuration from environment variables
-def get_mysql_config():
-    """Get MySQL configuration from Railway environment variables"""
-    # Try Railway's standard MySQL variables first
-    railway_host = os.environ.get('MYSQLHOST')
-    
-    if railway_host:
-        # Using Railway's managed MySQL service
+
+# Database Configuration for Railway
+import os
+import pymysql
+import pymysql.cursors
+
+# Get database credentials from environment variables (Railway provides these)
+def get_db_config():
+    """Get database configuration from Railway environment variables"""
+    # Railway's standard MySQL service variables
+    if 'MYSQLHOST' in os.environ:
+        # Using Railway's managed MySQL
         print("🚀 Using Railway's managed MySQL service")
         return {
-            'host': railway_host,
+            'host': os.environ.get('MYSQLHOST'),
             'user': os.environ.get('MYSQLUSER'),
             'password': os.environ.get('MYSQLPASSWORD'),
             'database': os.environ.get('MYSQLDATABASE'),
             'port': int(os.environ.get('MYSQLPORT', 3306))
         }
     else:
-        # Fallback to custom MySQL variables
+        # Fallback to custom variables
         print("⚠️ Using custom MySQL configuration")
         return {
             'host': os.environ.get('MYSQL_HOST', 'localhost'),
@@ -70,94 +74,67 @@ def get_mysql_config():
             'port': int(os.environ.get('MYSQL_PORT', 3306))
         }
 
-# Test database connection
-def test_database_connection():
-    """Test database connection with current configuration"""
-    try:
-        config = get_mysql_config()
-        print(f"📊 Database Configuration:")
-        print(f"   Host: {config['host']}")
-        print(f"   User: {config['user']}")
-        print(f"   Database: {config['database']}")
-        print(f"   Port: {config['port']}")
-        
-        connection = mysql.connector.connect(
-            host=config['host'],
-            user=config['user'],
-            password=config['password'],
-            database=config['database'],
-            port=config['port'],
-            connect_timeout=5
-        )
-        
-        if connection.is_connected():
-            print("✅ Database connection successful!")
-            connection.close()
-            return True
-        else:
-            print("❌ Database connection failed")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Database connection error: {e}")
-        return False
-
-# Update get_db() function to use the new configuration
 def get_db():
-    """Get database connection with error handling"""
+    """Get database connection using pymysql"""
     try:
-        config = get_mysql_config()
+        config = get_db_config()
         
-        connection = mysql.connector.connect(
+        print(f"🔗 Connecting to: {config['host']}:{config['port']} (DB: {config['database']})")
+        
+        connection = pymysql.connect(
             host=config['host'],
             user=config['user'],
             password=config['password'],
             database=config['database'],
             port=config['port'],
             charset='utf8mb4',
-            autocommit=False
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False,
+            connect_timeout=10
         )
         
+        print(f"✅ Connected to database: {config['database']}")
         return connection
         
-    except mysql.connector.Error as e:
+    except pymysql.Error as e:
         print(f"❌ Database connection error: {e}")
-        traceback.print_exc()
         
         # Try to create database if it doesn't exist
         try:
-            print("🔄 Attempting to create database...")
-            config = get_mysql_config()
+            print("🔄 Attempting to create database if it doesn't exist...")
+            config = get_db_config()
             
-            # Connect without database specified
-            connection = mysql.connector.connect(
+            # Connect without database
+            temp_conn = pymysql.connect(
                 host=config['host'],
                 user=config['user'],
                 password=config['password'],
                 port=config['port'],
-                charset='utf8mb4'
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor
             )
             
-            cursor = connection.cursor()
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {config['database']}")
-            cursor.execute(f"USE {config['database']}")
-            connection.commit()
-            cursor.close()
-            connection.close()
+            with temp_conn.cursor() as cursor:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {config['database']} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                cursor.execute(f"USE {config['database']}")
+                temp_conn.commit()
             
-            # Try connecting again with database
-            print("🔄 Reconnecting with database...")
-            connection = mysql.connector.connect(
+            temp_conn.close()
+            print(f"✅ Database '{config['database']}' created or already exists")
+            
+            # Try connecting again
+            connection = pymysql.connect(
                 host=config['host'],
                 user=config['user'],
                 password=config['password'],
                 database=config['database'],
                 port=config['port'],
                 charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
                 autocommit=False
             )
             
-            print(f"✅ Successfully created and connected to database: {config['database']}")
+            print(f"✅ Successfully connected to database: {config['database']}")
             return connection
             
         except Exception as e2:
@@ -588,16 +565,17 @@ def send_email(to_email, subject, html_content):
 
 def init_db():
     try:
-        config = get_mysql_config()
+        config = get_db_config()
         print(f"🔧 Initializing database: {config['database']}")
         
         # First check if database exists
-        connection = mysql.connector.connect(
+        connection = pymysql.connect(
             host=config['host'],
             user=config['user'],
             password=config['password'],
             port=config['port'],
-            charset='utf8mb4'
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor
         )
         
         with connection.cursor() as cursor:
@@ -13558,6 +13536,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

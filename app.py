@@ -63,9 +63,7 @@ try:
         SUPER_ADMIN_PASSWORD = config.get('SUPER_ADMIN_PASSWORD', 'superadmin123')
         app.secret_key = config.get('FLASK_SECRET_KEY', 'your-secret-key-change-in-production')
         
-        # Email config (optional)
-        EMAIL_USER = config.get('EMAIL_USER', 'gamergopi26@gmail.com')
-        EMAIL_PASSWORD = config.get('EMAIL_PASSWORD', 'laku neok xexr croj')
+      
         
         print("✅ Loaded configuration from secure file")
     else:
@@ -109,9 +107,9 @@ for var in required_vars:
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
-EMAIL_USER = 'gopi200026@gmail.com'  # Change this to your email
+EMAIL_USER = 'gamergopi26@gmail.com'  # Change this to your email
 EMAIL_PASSWORD = 'laku neok xexr croj'  # Change this to your app password
-EMAIL_FROM = 'gopi200026@gmail.com'  # Change this to your emai
+EMAIL_FROM = 'gamergopi26@gmail.com'  # Change this to your emai
 
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
@@ -13489,6 +13487,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

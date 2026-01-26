@@ -114,12 +114,12 @@ ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
 
 # Default Admin Credentials
 ADMIN_EMAIL = 'admin@example.com'
-ADMIN_PASSWORD = ADMIN_PASSWORD1
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
 ADMIN_NAME = 'System Administrator'
 
 # Super Admin Credentials
 SUPER_ADMIN_EMAIL = 'superadmin@example.com'
-SUPER_ADMIN_PASSWORD = SUPER_ADMIN_PASSWORD1
+SUPER_ADMIN_PASSWORD = os.getenv('SUPER_ADMIN_PASSWORD')
 SUPER_ADMIN_NAME = 'Super Administrator'
 
 # Department options
@@ -13485,6 +13485,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

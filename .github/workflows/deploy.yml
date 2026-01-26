@@ -1,0 +1,30 @@
+name: Deploy to Railway
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Deploy to Railway
+      uses: railwayapp/action@v1.0.1
+      with:
+        # Your Railway project ID (get from Railway dashboard)
+        projectId: ${{ secrets.RAILWAY_PROJECT_ID }}
+        # Railway token (create in Railway Settings > Access Tokens)
+        token: ${{ secrets.RAILWAY_TOKEN }}
+      env:
+        # Pass all your GitHub Secrets to Railway
+        ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        MYSQL_DB: ${{ secrets.MYSQL_DB }}
+        MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
+        MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+        MYSQL_USER: ${{ secrets.MYSQL_USER }}
+        SUPER_ADMIN_PASSWORD: ${{ secrets.SUPER_ADMIN_PASSWORD }}

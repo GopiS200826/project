@@ -4932,7 +4932,40 @@ def get_navbar():
         }
     </script>
     '''
-
+@app.route('/api/get-response/<int:form_id>', methods=['GET'])
+@login_required
+def get_response_by_form_id(form_id):
+    """Get response ID for a specific form and student"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('''
+                SELECT r.id as response_id
+                FROM responses r
+                WHERE r.form_id = %s AND r.student_id = %s
+                LIMIT 1
+            ''', (form_id, session['user_id']))
+            response = cursor.fetchone()
+        connection.close()
+        
+        if response:
+            return jsonify({
+                'success': True,
+                'response_id': response['response_id']
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No response found for this form'
+            }), 404
+            
+    except Exception as e:
+        print(f"Error getting response: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+        
 @app.route('/profile')
 @login_required
 def myprofile():
@@ -13482,6 +13515,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

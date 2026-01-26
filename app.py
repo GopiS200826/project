@@ -107,9 +107,9 @@ for var in required_vars:
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
-EMAIL_USER = 'gamergopi26@gmail.com'  # Change this to your email
-EMAIL_PASSWORD = 'laku neok xexr croj'  # Change this to your app password
-EMAIL_FROM = 'gamergopi26@gmail.com'  # Change this to your emai
+EMAIL_USER = 'gopi200026@gmail.com'  # Change this to your email
+EMAIL_PASSWORD = 'nxsg ddfb cvwf iduv'  # Change this to your app password
+EMAIL_FROM = 'gopi200026@gmail.com'  # Change this to your emai
 
 # Enable/Disable email notifications
 ENABLE_EMAIL_NOTIFICATIONS = True  # Set to False to disable emails
@@ -13487,6 +13487,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

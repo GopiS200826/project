@@ -518,16 +518,24 @@ def send_email(to_email, subject, html_content):
         print(f"Quick email error to {to_email}: {e}")
         return False
 
-def init_db():
-    try:
-        # First check if database exists
-        connection = pymysql.connect(
-            host=MYSQL_HOST,
-            user=MYSQL_USER,
-            password=MYSQL_PASSWORD,
-            charset='utf8mb4',
-            cursorclass=pymysql.cursors.DictCursor
-        )
+def get_db():
+    """Get database connection with proper error handling"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            connection = pymysql.connect(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                database=MYSQL_DB,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=False,
+                connect_timeout=10
+            )
+            return connection
+        except pymysql.OperationalError as e:
+            print(f"Database connection error (attempt {attempt + 1}/{max_retries}): {e}")
         
         with connection.cursor() as cursor:
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}")
@@ -13487,6 +13495,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

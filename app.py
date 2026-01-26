@@ -4135,12 +4135,7 @@ def dashboard():
                         </span>
                     </p>
                 </div>
-                <div>
-                    <a href="/notifications" class="btn btn-outline-light position-relative me-2">
-                        <i class="fas fa-bell"></i>
-                        {f'<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{get_unread_notification_count(user_id)}</span>' if get_unread_notification_count(user_id) > 0 else ''}
-                    </a>
-                </div>
+                
             </div>
         </div>
 
@@ -13487,6 +13482,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

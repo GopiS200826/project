@@ -41,32 +41,29 @@ OTP_LENGTH = 6
 #MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
 #MYSQL_DB = 'railway'
 
-# Your current code (perfect as-is)
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
-MYSQL_DB = os.environ.get('MYSQL_DB')
-MYSQL_HOST = os.environ.get('MYSQL_HOST')
-MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD')
-MYSQL_USER = os.environ.get('MYSQL_USER')
-SUPER_ADMIN_PASSWORD = os.environ.get('SUPER_ADMIN_PASSWORD')
-
-# For Railway deployment - MUST have these
-PORT = int(os.environ.get("PORT", 5000))
-
-def check_env_vars():
-    """Debug function to check if variables are loaded"""
-    vars_to_check = [
-        ('ADMIN_PASSWORD', ADMIN_PASSWORD),
-        ('MYSQL_DB', MYSQL_DB),
-        ('MYSQL_HOST', MYSQL_HOST),
-        ('MYSQL_USER', MYSQL_USER),
-        ('SUPER_ADMIN_PASSWORD', SUPER_ADMIN_PASSWORD)
-    ]
+# Check if using Railway's managed MySQL
+def get_mysql_config():
+    # Railway's managed MySQL uses these variable names:
+    railway_mysql_host = os.environ.get('MYSQLHOST')
     
-    for name, value in vars_to_check:
-        if value:
-            print(f"✅ {name}: Loaded")
-        else:
-            print(f"⚠️  {name}: Not set")
+    if railway_mysql_host:
+        # Using Railway's managed MySQL
+        return {
+            'host': railway_mysql_host,
+            'user': os.environ.get('MYSQLUSER'),
+            'password': os.environ.get('MYSQLPASSWORD'),
+            'database': os.environ.get('MYSQLDATABASE'),
+            'port': os.environ.get('MYSQLPORT', 3306)
+        }
+    else:
+        # Using your custom MySQL (your current setup)
+        return {
+            'host': os.environ.get('MYSQL_HOST', 'localhost'),
+            'user': os.environ.get('MYSQL_USER', 'root'),
+            'password': os.environ.get('MYSQL_PASSWORD', ''),
+            'database': os.environ.get('MYSQL_DB', 'mydb'),
+            'port': 3306
+        }
 
 # For Railway's MySQL service (if using Railway's managed MySQL)
 # Railway provides these as environment variables automatically:
@@ -13504,6 +13501,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

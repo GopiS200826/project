@@ -41,6 +41,52 @@ MYSQL_USER = 'root'
 MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
 MYSQL_DB = 'railway'
 
+def get_db():
+    """Get database connection with error handling"""
+    try:
+        connection = pymysql.connect(
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DB,
+            port=MYSQL_PORT,  # Add this line
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False
+        )
+        return connection
+    except pymysql.Error as e:
+        print(f"Database connection error: {e}")
+        # Try to create database if it doesn't exist
+        try:
+            connection = pymysql.connect(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                port=MYSQL_PORT,  # Add this line
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor
+            )
+            with connection.cursor() as cursor:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}")
+                cursor.execute(f"USE {MYSQL_DB}")
+            connection.close()
+            
+            # Try connecting again
+            return pymysql.connect(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                database=MYSQL_DB,
+                port=MYSQL_PORT,  # Add this line
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=False
+            )
+        except Exception as e2:
+            print(f"Failed to create database: {e2}")
+            raise
+
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
@@ -13428,6 +13474,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

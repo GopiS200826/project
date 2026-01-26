@@ -46,7 +46,7 @@ OTP_LENGTH = 6
 
 load_dotenv()
 
-# ========== SECURE CONFIGURATION =========
+# ========== SECURE CONFIGURATION ========
 try:
     # Try to load from secure config file
     from secure_config import secure_config
@@ -13495,6 +13495,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

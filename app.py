@@ -98,6 +98,23 @@ def teacher_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# Password functions - FIXED VERSION
+def hash_password(password):
+    """Hash password consistently using SHA256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def check_password(hashed, password):
+    """Check password consistently using SHA256"""
+    try:
+        return hashed == hashlib.sha256(password.encode()).hexdigest()
+    except Exception as e:
+        print(f"Password check error: {e}")
+        return False
+
+def handle_password(password):
+    """Alias for hash_password for backward compatibility"""
+    return hash_password(password)  # Add this function
+
 def admin_required(f):
     @wraps(f)
     @login_required
@@ -709,11 +726,18 @@ def init_db():
             connection.close()
 
 # Password functions
+# Password functions - FIXED VERSION
 def hash_password(password):
+    """Hash password consistently using SHA256"""
     return hashlib.sha256(password.encode()).hexdigest()
 
 def check_password(hashed, password):
-    return hashed == hashlib.sha256(password.encode()).hexdigest()
+    """Check password consistently using SHA256"""
+    try:
+        return hashed == hashlib.sha256(password.encode()).hexdigest()
+    except Exception as e:
+        print(f"Password check error: {e}")
+        return False
 
 # OTP Functions
 def generate_otp(length=OTP_LENGTH):
@@ -2939,187 +2963,2036 @@ def forgot_password():
     '''
     return html_wrapper('Forgot Password', content, '', '')
 
-# Add admin-only direct user creation (without OTP)
+
+
+import time
+import traceback
+from flask import request, jsonify, session
+from werkzeug.security import generate_password_hash
+
+def admin_required(f):
+    """Decorator to require admin role"""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if session.get('role') != 'admin':
+            return jsonify({'success': False, 'error': 'Admin access required'}), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/debug/db-test')
+@admin_required
+def debug_db_test():
+    """Debug database connection and tables - Simplified version"""
+    try:
+        print("\n[DB TEST] Attempting to get database connection...")
+        from app import get_db
+        connection = get_db()
+        print("[DB TEST] Connection obtained")
+        
+        cursor = connection.cursor()
+        print("[DB TEST] Cursor created, executing test query...")
+        
+        # Test connection
+        cursor.execute("SELECT 1 as test")
+        test_result = cursor.fetchone()
+        print(f"[DB TEST] Test query result: {test_result}")
+        print(f"[DB TEST] Result type: {type(test_result)}")
+        print(f"[DB TEST] Result keys (if dict): {list(test_result.keys()) if isinstance(test_result, dict) else 'Not a dict'}")
+        
+        # Count users
+        cursor.execute("SELECT COUNT(*) as count FROM users")
+        user_count_result = cursor.fetchone()
+        print(f"[DB TEST] User count result: {user_count_result}")
+        
+        # Extract user count safely
+        user_count = 0
+        if isinstance(user_count_result, dict):
+            user_count = user_count_result.get('count', 0)
+        elif isinstance(user_count_result, (tuple, list)) and len(user_count_result) > 0:
+            user_count = user_count_result[0]
+        elif user_count_result:
+            # Try to get first value if it's some other iterable
+            try:
+                user_count = list(user_count_result.values())[0]
+            except:
+                user_count = 0
+        
+        print(f"[DB TEST] Extracted user count: {user_count}")
+        
+        # Get table info
+        cursor.execute("SHOW TABLES LIKE 'users'")
+        tables = cursor.fetchall()
+        print(f"[DB TEST] Users table check: {tables}")
+        
+        cursor.close()
+        connection.close()
+        print("[DB TEST] Connection closed")
+        
+        return jsonify({
+            'success': True,
+            'connection': 'OK',
+            'user_count': user_count,
+            'tables_exist': len(tables) > 0,
+            'result_type': str(type(test_result))
+        })
+        
+    except Exception as e:
+        print(f"[DB TEST ERROR] {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+@app.route('/admin/get-users', methods=['GET'])
+@admin_required
+def admin_get_users():
+    """Get all users for update selection dropdown"""
+    try:
+        from app import get_db
+        connection = get_db()
+        cursor = connection.cursor()
+        
+        # Get users with basic info
+        cursor.execute("""
+            SELECT id, name, email, role, department 
+            FROM users 
+            ORDER BY name
+        """)
+        users_result = cursor.fetchall()
+        
+        users_list = []
+        for row in users_result:
+            if isinstance(row, dict):
+                users_list.append({
+                    'id': row.get('id'),
+                    'name': row.get('name', ''),
+                    'email': row.get('email', ''),
+                    'role': row.get('role', ''),
+                    'department': row.get('department', '')
+                })
+            elif isinstance(row, (tuple, list)):
+                users_list.append({
+                    'id': row[0] if len(row) > 0 else None,
+                    'name': row[1] if len(row) > 1 else '',
+                    'email': row[2] if len(row) > 2 else '',
+                    'role': row[3] if len(row) > 3 else '',
+                    'department': row[4] if len(row) > 4 else ''
+                })
+        
+        cursor.close()
+        connection.close()
+        
+        return jsonify({
+            'success': True,
+            'users': users_list
+        })
+        
+    except Exception as e:
+        print(f"[GET USERS ERROR] {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/admin/get-user/<int:user_id>', methods=['GET'])
+@admin_required
+def admin_get_user(user_id):
+    """Get specific user details for update"""
+    try:
+        from app import get_db
+        connection = get_db()
+        cursor = connection.cursor()
+        
+        cursor.execute("""
+            SELECT id, name, email, role, department 
+            FROM users 
+            WHERE id = %s
+        """, (user_id,))
+        
+        user_result = cursor.fetchone()
+        
+        if not user_result:
+            return jsonify({'success': False, 'error': 'User not found'})
+        
+        user_data = {}
+        if isinstance(user_result, dict):
+            user_data = {
+                'id': user_result.get('id'),
+                'name': user_result.get('name', ''),
+                'email': user_result.get('email', ''),
+                'role': user_result.get('role', ''),
+                'department': user_result.get('department', '')
+            }
+        elif isinstance(user_result, (tuple, list)):
+            user_data = {
+                'id': user_result[0] if len(user_result) > 0 else None,
+                'name': user_result[1] if len(user_result) > 1 else '',
+                'email': user_result[2] if len(user_result) > 2 else '',
+                'role': user_result[3] if len(user_result) > 3 else '',
+                'department': user_result[4] if len(user_result) > 4 else ''
+            }
+        
+        cursor.close()
+        connection.close()
+        
+        return jsonify({
+            'success': True,
+            'user': user_data
+        })
+        
+    except Exception as e:
+        print(f"[GET USER ERROR] {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/admin/update-user', methods=['POST'])
+@admin_required
+def admin_update_user():
+    """Update existing user"""
+    print(f"\n{'='*50}")
+    print(f"UPDATE USER DEBUG - {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*50}")
+    
+    try:
+        # Get form data
+        user_id = request.form.get('user_id', '').strip()
+        name = request.form.get('name', '').strip()
+        email = request.form.get('email', '').strip()
+        password = request.form.get('password', '').strip()
+        role = request.form.get('role', '').strip()
+        department = request.form.get('department', '').strip()
+        
+        print(f"\n[UPDATE FORM DATA]")
+        print(f"User ID: {user_id}")
+        print(f"Name: {name}")
+        print(f"Email: {email}")
+        print(f"Password: {'*' * len(password) if password else 'Empty'}")
+        print(f"Role: {role}")
+        print(f"Department: {department}")
+        
+        # Validate required fields
+        if not user_id or not user_id.isdigit():
+            error_msg = "Invalid user ID"
+            print(f"[ERROR] {error_msg}")
+            return jsonify({'success': False, 'error': error_msg})
+        
+        if not all([name, email, role, department]):
+            missing = []
+            if not name: missing.append('Name')
+            if not email: missing.append('Email')
+            if not role: missing.append('Role')
+            if not department: missing.append('Department')
+            
+            error_msg = f"Missing required fields: {', '.join(missing)}"
+            print(f"[ERROR] {error_msg}")
+            return jsonify({'success': False, 'error': error_msg})
+        
+        # Validate email format
+        if '@' not in email or '.' not in email:
+            error_msg = "Invalid email format"
+            print(f"[ERROR] {error_msg}")
+            return jsonify({'success': False, 'error': error_msg})
+        
+        # Get database connection
+        try:
+            print("\n[ATTEMPTING DATABASE CONNECTION]")
+            from app import get_db
+            connection = get_db()
+            print("[SUCCESS] Database connection established")
+        except Exception as e:
+            error_msg = f"Database connection failed: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            traceback.print_exc()
+            return jsonify({'success': False, 'error': error_msg}), 500
+        
+        try:
+            cursor = connection.cursor()
+            print("[SUCCESS] Database cursor created")
+            
+            # Check if email already exists for another user
+            cursor.execute("SELECT id FROM users WHERE email = %s AND id != %s", (email, user_id))
+            existing_user = cursor.fetchone()
+            
+            if existing_user:
+                error_msg = f"Email already registered to another user"
+                print(f"[ERROR] {error_msg}")
+                cursor.close()
+                connection.close()
+                return jsonify({'success': False, 'error': error_msg})
+            
+            # Update user in database
+            print("\n[UPDATING USER IN DATABASE]")
+    
+            if password:
+                # Update with password - Use the same hash_password function
+                hashed_password = handle_password(password)               
+                sql = """
+                UPDATE users 
+                SET name = %s, email = %s, password = %s, role = %s, department = %s
+                WHERE id = %s
+                """
+                params = (name, email, hashed_password, role, department, user_id)
+            else:
+                # Update without changing password
+                sql = """
+                UPDATE users 
+                SET name = %s, email = %s, role = %s, department = %s
+                WHERE id = %s
+                """
+                params = (name, email, role, department, user_id)
+            
+            print(f"SQL: {sql}")
+            print(f"Params: {params}")
+            
+            cursor.execute(sql, params)
+            rows_affected = cursor.rowcount
+            connection.commit()
+            
+            if rows_affected == 0:
+                error_msg = "User not found or no changes made"
+                print(f"[ERROR] {error_msg}")
+                cursor.close()
+                connection.close()
+                return jsonify({'success': False, 'error': error_msg})
+            
+            print(f"[SUCCESS] User updated. Rows affected: {rows_affected}")
+            
+            # Get updated user
+            cursor.execute("SELECT id, name, email, role, department FROM users WHERE id = %s", (user_id,))
+            updated_user_result = cursor.fetchone()
+            
+            updated_user = {}
+            if updated_user_result:
+                if isinstance(updated_user_result, dict):
+                    updated_user = {
+                        'id': updated_user_result.get('id'),
+                        'name': updated_user_result.get('name'),
+                        'email': updated_user_result.get('email'),
+                        'role': updated_user_result.get('role'),
+                        'department': updated_user_result.get('department')
+                    }
+                elif isinstance(updated_user_result, (tuple, list)):
+                    updated_user = {
+                        'id': updated_user_result[0] if len(updated_user_result) > 0 else None,
+                        'name': updated_user_result[1] if len(updated_user_result) > 1 else '',
+                        'email': updated_user_result[2] if len(updated_user_result) > 2 else '',
+                        'role': updated_user_result[3] if len(updated_user_result) > 3 else '',
+                        'department': updated_user_result[4] if len(updated_user_result) > 4 else ''
+                    }
+            
+            # Get total user count
+            cursor.execute("SELECT COUNT(*) FROM users")
+            count_result = cursor.fetchone()
+            
+            total_users = 0
+            if count_result:
+                if isinstance(count_result, dict):
+                    total_users = list(count_result.values())[0]
+                elif isinstance(count_result, (tuple, list)):
+                    total_users = count_result[0]
+                else:
+                    total_users = count_result
+            
+            cursor.close()
+            connection.close()
+            
+            response_data = {
+                'success': True,
+                'message': f'User "{name}" updated successfully!',
+                'user_id': user_id,
+                'total_users': total_users,
+                'user': updated_user
+            }
+            
+            return jsonify(response_data)
+                
+        except Exception as db_error:
+            connection.rollback()
+            error_msg = f"Database update failed: {str(db_error)}"
+            print(f"[ERROR] {error_msg}")
+            traceback.print_exc()
+            try:
+                cursor.close()
+            except:
+                pass
+            try:
+                connection.close()
+            except:
+                pass
+            return jsonify({'success': False, 'error': error_msg})
+            
+    except Exception as e:
+        error_msg = f"Unexpected error: {str(e)}"
+        print(f"[CRITICAL ERROR] {error_msg}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': error_msg})
+
 @app.route('/admin/create-user', methods=['GET', 'POST'])
 @admin_required
 def admin_create_user():
-    """Admin-only user creation (no OTP required)"""
+    """Admin-only user creation (no OTP required) - For backward compatibility"""
+    
+    print(f"\n{'='*50}")
+    print(f"CREATE USER DEBUG - {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*50}")
+    print(f"Request method: {request.method}")
+    print(f"Session user_id: {session.get('user_id')}")
+    print(f"Session role: {session.get('role')}")
+    
+    # Handle POST request
     if request.method == 'POST':
+        print("\n[POST REQUEST STARTED]")
+        
         try:
-            name = request.form['name']
-            email = request.form['email']
-            password = request.form['password']
-            role = request.form['role']
-            department = request.form['department']
+            # Get form data
+            name = request.form.get('name', '').strip()
+            email = request.form.get('email', '').strip()
+            password = request.form.get('password', '').strip()
+            role = request.form.get('role', '').strip()
+            department = request.form.get('department', '').strip()
             
-            # Check if email exists
-            connection = get_db()
+            print(f"\n[FORM DATA RECEIVED]")
+            print(f"Name: {name}")
+            print(f"Email: {email}")
+            print(f"Password: {'*' * len(password) if password else 'Empty'}")
+            print(f"Role: {role}")
+            print(f"Department: {department}")
+            
+            # Validate required fields
+            if not all([name, email, password, role, department]):
+                missing = []
+                if not name: missing.append('Name')
+                if not email: missing.append('Email')
+                if not password: missing.append('Password')
+                if not role: missing.append('Role')
+                if not department: missing.append('Department')
+                
+                error_msg = f"Missing required fields: {', '.join(missing)}"
+                print(f"[ERROR] {error_msg}")
+                return jsonify({'success': False, 'error': error_msg})
+            
+            # Validate email format
+            if '@' not in email or '.' not in email:
+                error_msg = "Invalid email format"
+                print(f"[ERROR] {error_msg}")
+                return jsonify({'success': False, 'error': error_msg})
+            
+            # Get database connection
             try:
-                with connection.cursor() as cursor:
-                    cursor.execute('SELECT id FROM users WHERE email = %s', (email,))
-                    if cursor.fetchone():
-                        connection.close()
-                        return jsonify({'success': False, 'error': 'Email already exists'})
+                print("\n[ATTEMPTING DATABASE CONNECTION]")
+                from app import get_db
+                connection = get_db()
+                print("[SUCCESS] Database connection established")
+            except Exception as e:
+                error_msg = f"Database connection failed: {str(e)}"
+                print(f"[ERROR] {error_msg}")
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': error_msg}), 500
+            
+            try:
+                cursor = connection.cursor()
+                print("[SUCCESS] Database cursor created")
+                
+                # Check if users table exists
+                print("\n[CHECKING USERS TABLE]")
+                cursor.execute("SHOW TABLES LIKE 'users'")
+                tables = cursor.fetchall()
+                print(f"Tables found: {tables}")
+                
+                if not tables:
+                    error_msg = "Users table not found in database"
+                    print(f"[ERROR] {error_msg}")
+                    cursor.close()
+                    connection.close()
+                    return jsonify({'success': False, 'error': error_msg})
+                
+                # Check table structure - SAFE VERSION
+                print("\n[CHECKING TABLE STRUCTURE - SAFE METHOD]")
+                
+                # Method 1: Try to get column names from DESCRIBE
+                column_names = []
+                try:
+                    cursor.execute("DESCRIBE users")
+                    columns_result = cursor.fetchall()
+                    print(f"DESCRIBE result type: {type(columns_result)}")
+                    print(f"First row type: {type(columns_result[0]) if columns_result else 'No rows'}")
                     
-                    hashed = hash_password(password)
-                    cursor.execute(
-                        'INSERT INTO users (name, email, password, role, department) VALUES (%s, %s, %s, %s, %s)',
-                        (name, email, hashed, role, department)
-                    )
+                    if columns_result:
+                        # Check what type of data we have
+                        first_row = columns_result[0]
+                        if isinstance(first_row, dict):
+                            # Dictionary result
+                            column_names = [col.get('Field', '') for col in columns_result]
+                        elif isinstance(first_row, (tuple, list)):
+                            # Tuple result - Field is first column
+                            column_names = [col[0] for col in columns_result]
+                        else:
+                            # Unknown type, try to extract
+                            column_names = []
+                            for col in columns_result:
+                                if isinstance(col, dict):
+                                    column_names.append(col.get('Field', ''))
+                                elif hasattr(col, '__getitem__'):
+                                    try:
+                                        column_names.append(col[0])
+                                    except:
+                                        pass
+                except Exception as desc_error:
+                    print(f"[WARNING] DESCRIBE failed: {desc_error}")
+                    # Try alternative method
+                    try:
+                        cursor.execute("SHOW COLUMNS FROM users")
+                        cols_result = cursor.fetchall()
+                        if cols_result:
+                            first_col = cols_result[0]
+                            if isinstance(first_col, dict):
+                                column_names = [col.get('Field', '') for col in cols_result]
+                            else:
+                                column_names = [col[0] for col in cols_result]
+                    except Exception as col_error:
+                        print(f"[WARNING] SHOW COLUMNS also failed: {col_error}")
+                        # Use default columns
+                        column_names = ['name', 'email', 'password', 'role', 'department']
+                
+                print(f"Table columns detected: {column_names}")
+                
+                # Clean column names
+                column_names = [col for col in column_names if col]
+                
+                # If no columns detected, use defaults
+                if not column_names:
+                    column_names = ['name', 'email', 'password', 'role', 'department']
+                    print(f"[INFO] Using default columns: {column_names}")
+                
+                # Check if email already exists - SAFE VERSION
+                print(f"\n[CHECKING EMAIL AVAILABILITY] {email}")
+                cursor.execute("SELECT id, name FROM users WHERE email = %s", (email,))
+                existing_user = cursor.fetchone()
+                
+                if existing_user:
+                    # Extract name safely
+                    existing_name = "Unknown"
+                    if isinstance(existing_user, dict):
+                        existing_name = existing_user.get('name', 'Unknown')
+                    elif isinstance(existing_user, (tuple, list)) and len(existing_user) > 1:
+                        existing_name = existing_user[1]
+                    
+                    error_msg = f"Email already registered to user: {existing_name}"
+                    print(f"[ERROR] {error_msg}")
+                    cursor.close()
+                    connection.close()
+                    return jsonify({'success': False, 'error': error_msg})
+                
+                print("[SUCCESS] Email is available")
+                
+                # Hash password
+                print("\n[HASHING PASSWORD]")
+                try:
+                    hashed_password = handle_password(password)  # Use the same function as registration                   
+                    print("[SUCCESS] Password hashed successfully")
+                except Exception as e:
+                    error_msg = f"Password hashing failed: {str(e)}"
+                    print(f"[ERROR] {error_msg}")
+                    cursor.close()
+                    connection.close()
+                    return jsonify({'success': False, 'error': error_msg})
+                
+                # Insert user into database
+                print("\n[INSERTING USER INTO DATABASE]")
+                
+                # Check if department column exists
+                if 'department' in column_names:
+                    sql = """
+                    INSERT INTO users (name, email, password, role, department) 
+                    VALUES (%s, %s, %s, %s, %s)
+                    """
+                    params = (name, email, hashed_password, role, department)
+                else:
+                    sql = """
+                    INSERT INTO users (name, email, password, role) 
+                    VALUES (%s, %s, %s, %s)
+                    """
+                    params = (name, email, hashed_password, role)
+                
+                print(f"SQL: {sql}")
+                print(f"Params: {params}")
+                
+                try:
+                    cursor.execute(sql, params)
                     user_id = cursor.lastrowid
-                    
                     connection.commit()
                     
-                    # Create notification for admin
-                    create_notification(
-                        user_id=session['user_id'],
-                        title='User Created',
-                        message=f'Created user {name} ({email}) as {role}',
-                        type='success',
-                        link='/admin'
-                    )
+                    print(f"[SUCCESS] User inserted with ID: {user_id}")
+                    print(f"[SUCCESS] Rows affected: {cursor.rowcount}")
                     
-                    # Send welcome email to new user
-                    if ENABLE_EMAIL_NOTIFICATIONS:
-                        html_content = f'''
-                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                            <h2 style="color: #667eea;">Account Created by Administrator</h2>
-                            <p>Hello {name},</p>
-                            <p>Your account has been created by an administrator.</p>
-                            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
-                                <p><strong>Account Details:</strong></p>
-                                <p>Name: {name}</p>
-                                <p>Email: {email}</p>
-                                <p>Role: {role.title()}</p>
-                                <p>Department: {department}</p>
-                                <p>Created By: {session['name']}</p>
-                            </div>
-                            <p>You can now login to your account.</p>
-                            <a href="https://formmaster.up.railway.app/login" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Login Now</a>
-                            <p><strong>Note:</strong> { 'You will need OTP verification for login.' if role in ['student', 'teacher'] else 'Admin accounts can login directly without OTP.'}</p>
-                        </div>
-                        '''
-                        send_email(email, 'Account Created - FormMaster Pro', html_content)
+                    # Verify the insertion - SIMPLE VERSION
+                    print("\n[VERIFYING INSERTION]")
+                    cursor.execute("SELECT id, name, email, role FROM users WHERE id = %s", (user_id,))
+                    new_user_result = cursor.fetchone()
                     
-                    return jsonify({'success': True, 'message': 'User created successfully'})
+                    new_user = None
+                    if new_user_result:
+                        if isinstance(new_user_result, dict):
+                            new_user = {
+                                'id': new_user_result.get('id'),
+                                'name': new_user_result.get('name'),
+                                'email': new_user_result.get('email'),
+                                'role': new_user_result.get('role')
+                            }
+                        elif isinstance(new_user_result, (tuple, list)):
+                            new_user = {
+                                'id': new_user_result[0] if len(new_user_result) > 0 else None,
+                                'name': new_user_result[1] if len(new_user_result) > 1 else '',
+                                'email': new_user_result[2] if len(new_user_result) > 2 else '',
+                                'role': new_user_result[3] if len(new_user_result) > 3 else ''
+                            }
+                        print(f"[SUCCESS] User verified: {new_user}")
+                    else:
+                        print("[WARNING] User created but not found during verification")
                     
-            finally:
-                connection.close()
+                    # Get total user count - SIMPLE VERSION
+                    cursor.execute("SELECT COUNT(*) FROM users")
+                    count_result = cursor.fetchone()
+                    
+                    total_users = 0
+                    if count_result:
+                        if isinstance(count_result, dict):
+                            total_users = list(count_result.values())[0]
+                        elif isinstance(count_result, (tuple, list)):
+                            total_users = count_result[0]
+                        else:
+                            total_users = count_result
+                    
+                    print(f"[SUCCESS] Total users in database: {total_users}")
+                    
+                    response_data = {
+                        'success': True,
+                        'message': f'User "{name}" created successfully!',
+                        'user_id': user_id,
+                        'total_users': total_users
+                    }
+                    
+                    if new_user:
+                        response_data['user'] = new_user
+                    
+                    cursor.close()
+                    connection.close()
+                    print("[INFO] Database connection closed")
+                    
+                    return jsonify(response_data)
+                        
+                except Exception as insert_error:
+                    connection.rollback()
+                    error_msg = f"Database insert failed: {str(insert_error)}"
+                    print(f"[ERROR] {error_msg}")
+                    print(f"[DEBUG] SQL Error details: {insert_error}")
+                    traceback.print_exc()
+                    cursor.close()
+                    connection.close()
+                    return jsonify({'success': False, 'error': error_msg})
+                        
+            except Exception as db_error:
+                error_msg = f"Database operation failed: {str(db_error)}"
+                print(f"[ERROR] {error_msg}")
+                traceback.print_exc()
+                try:
+                    cursor.close()
+                except:
+                    pass
+                try:
+                    connection.close()
+                except:
+                    pass
+                return jsonify({'success': False, 'error': error_msg})
                 
         except Exception as e:
-            print(f"Admin create user error: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            error_msg = f"Unexpected error: {str(e)}"
+            print(f"[CRITICAL ERROR] {error_msg}")
+            traceback.print_exc()
+            return jsonify({'success': False, 'error': error_msg})
+        
+        print("\n[POST REQUEST COMPLETED]")
     
-    # GET request - show form
-    departments_options = ''.join([f'<option value="{dept}">{dept}</option>' for dept in DEPARTMENTS])
+    # Handle GET request - Show the form
+    print("\n[RENDERING CREATE USER FORM]")
     
-    content = f'''
-    <div class="row justify-content-center">
-        <div class="col-md-6">
-            <div class="card">
-                <div class="card-header bg-primary text-white">
-                    <h4 class="mb-0">
-                        <i class="fas fa-user-plus me-2"></i>Create User (Admin)
-                    </h4>
-                    <p class="mb-0">Direct user creation - No OTP required</p>
-                </div>
-                <div class="card-body">
-                    <div class="alert alert-warning">
-                        <i class="fas fa-exclamation-triangle me-2"></i>
-                        <strong>Admin Only:</strong> Users created here can login directly.
-                        { 'Non-admin users will still need OTP for future logins.'}
+    # Default values
+    existing_roles = ['student', 'teacher', 'admin']
+    existing_departments = ['IT', 'Data Science', 'AI/ML', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS', 'Others']
+    
+    # Try to fetch from database
+    try:
+        print("\n[FETCHING ROLES AND DEPARTMENTS FROM DATABASE]")
+        from app import get_db
+        connection = get_db()
+        cursor = connection.cursor()
+        
+        # Get distinct roles - SIMPLE VERSION
+        cursor.execute("SELECT DISTINCT role FROM users WHERE role IS NOT NULL AND role != '' ORDER BY role")
+        roles_result = cursor.fetchall()
+        
+        if roles_result:
+            extracted_roles = []
+            for row in roles_result:
+                if isinstance(row, dict):
+                    role_val = row.get('role')
+                elif isinstance(row, (tuple, list)):
+                    role_val = row[0] if len(row) > 0 else None
+                else:
+                    role_val = row
+                
+                if role_val:
+                    extracted_roles.append(str(role_val))
+            
+            if extracted_roles:
+                existing_roles = extracted_roles
+                print(f"[SUCCESS] Found roles: {existing_roles}")
+        
+        # Get distinct departments - SIMPLE VERSION
+        cursor.execute("SELECT DISTINCT department FROM users WHERE department IS NOT NULL AND department != '' ORDER BY department")
+        dept_result = cursor.fetchall()
+        
+        if dept_result:
+            extracted_depts = []
+            for row in dept_result:
+                if isinstance(row, dict):
+                    dept_val = row.get('department')
+                elif isinstance(row, (tuple, list)):
+                    dept_val = row[0] if len(row) > 0 else None
+                else:
+                    dept_val = row
+                
+                if dept_val:
+                    extracted_depts.append(str(dept_val))
+            
+            if extracted_depts:
+                existing_departments = extracted_depts
+                print(f"[SUCCESS] Found departments: {existing_departments}")
+        
+        cursor.close()
+        connection.close()
+        
+    except Exception as e:
+        print(f"[WARNING] Could not fetch roles/departments: {e}")
+        print("[INFO] Using default values")
+    
+    # Clean up lists
+    existing_roles = [str(role).strip() for role in existing_roles if role]
+    existing_departments = [str(dept).strip() for dept in existing_departments if dept]
+    
+    # Remove duplicates and sort
+    existing_roles = sorted(list(set(existing_roles)))
+    existing_departments = sorted(list(set(existing_departments)))
+    
+    # Set default values if lists are empty
+    if not existing_roles:
+        existing_roles = ['student', 'teacher', 'admin']
+    if not existing_departments:
+        existing_departments = ['IT', 'Data Science', 'AI/ML', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS', 'Others']
+    
+    # Generate timestamp for unique email
+    timestamp = int(time.time())
+    
+    # Generate role options HTML
+    role_options_html = ''.join([f'<option value="{role}">{role.title()}</option>' for role in existing_roles])
+    
+    # Generate department options HTML
+    department_options_html = ''.join([f'<option value="{dept}">{dept}</option>' for dept in existing_departments])
+    
+    # HTML form
+    html_form = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create New User - Admin Panel</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .card {
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            border: none;
+        }
+        
+        .card-header {
+            background: linear-gradient(135deg, #4e73df 0%, #224abe 100%);
+            color: white;
+            border-radius: 15px 15px 0 0 !important;
+            padding: 20px;
+        }
+        
+        .form-control, .form-select {
+            border-radius: 10px;
+            padding: 12px 15px;
+            border: 2px solid #e1e5e9;
+        }
+        
+        .form-control:focus, .form-select:focus {
+            border-color: #4e73df;
+            box-shadow: 0 0 0 3px rgba(78, 115, 223, 0.1);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #4e73df 0%, #224abe 100%);
+            border: none;
+            border-radius: 10px;
+            padding: 12px 25px;
+            font-weight: 600;
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 25px;
+            font-weight: 600;
+        }
+        
+        .alert {
+            border-radius: 10px;
+        }
+        
+        .status-card {
+            background: #f8f9fa;
+            border-left: 4px solid #4e73df;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-8 col-lg-6">
+                <div class="card">
+                    <div class="card-header text-center">
+                        <h3 class="mb-2"><i class="fas fa-user-plus me-2"></i>Create New User</h3>
+                        <p class="mb-0 opacity-75">Admin-only user creation</p>
                     </div>
                     
-                    <form id="createUserForm">
-                        <div class="mb-3">
-                            <label class="form-label">Full Name *</label>
-                            <input type="text" class="form-control" name="name" required>
-                        </div>
+                    <div class="card-body p-4">
+                        <div id="result" class="mb-3"></div>
                         
-                        <div class="mb-3">
-                            <label class="form-label">Email *</label>
-                            <input type="email" class="form-control" name="email" required>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">Password *</label>
-                            <input type="password" class="form-control" name="password" required minlength="8">
-                        </div>
-                        
-                        <div class="row">
-                            <div class="col-md-6 mb-3">
-                                <label class="form-label">Role *</label>
-                                <select class="form-select" name="role" required>
-                                    <option value="student">Student</option>
-                                    <option value="teacher">Teacher</option>
-                                    <option value="admin">Admin</option>
-                                    <option value="super_admin">Super Admin</option>
-                                </select>
+                        <form id="createUserForm">
+                            <div class="mb-3">
+                                <label class="form-label">Full Name</label>
+                                <input type="text" class="form-control" name="name" value="Test User" required>
                             </div>
-                            <div class="col-md-6 mb-3">
-                                <label class="form-label">Department *</label>
-                                <select class="form-select" name="department" required>
-                                    <option value="">Select Department</option>
-                                    {departments_options}
-                                </select>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Email Address</label>
+                                <input type="email" class="form-control" name="email" value="test''' + str(timestamp) + '''@example.com" required>
+                                <div class="form-text">Unique email required</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Password</label>
+                                <input type="password" class="form-control" name="password" value="password123" required>
+                                <div class="form-text">Min 8 characters</div>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Role</label>
+                                    <select class="form-select" name="role" required>
+                                        <option value="">Select Role</option>
+                                        ''' + role_options_html + '''
+                                    </select>
+                                </div>
+                                
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Department</label>
+                                    <select class="form-select" name="department" required>
+                                        <option value="">Select Department</option>
+                                        ''' + department_options_html + '''
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div class="d-flex justify-content-between mt-4">
+                                <button type="button" id="testDbBtn" class="btn btn-secondary">
+                                    <i class="fas fa-database me-2"></i>Test DB Connection
+                                </button>
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="fas fa-user-plus me-2"></i>Create User
+                                </button>
+                            </div>
+                        </form>
+                        
+                        <div class="status-card mt-4">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h5 class="mb-0"><i class="fas fa-server me-2"></i>Database Status</h5>
+                                <span id="dbStatusBadge" class="badge bg-secondary">Not Tested</span>
+                            </div>
+                            <div id="dbState" class="text-muted">
+                                Click "Test DB Connection" to check database status
                             </div>
                         </div>
                         
-                        <div class="d-grid gap-2">
-                            <button type="submit" class="btn btn-primary">
-                                <i class="fas fa-save me-2"></i>Create User
-                            </button>
-                            <a href="/admin" class="btn btn-secondary">Back to Admin Panel</a>
+                        <!-- Debug Info -->
+                        <div class="alert alert-info mt-3 small">
+                            <i class="fas fa-bug me-2"></i>
+                            <strong>Debug Info:</strong> Check Flask console for detailed database operations
                         </div>
-                        
-                    </form>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
     
+    <script src="https://code.jquery.com/jquery-3.6.4.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    
     <script>
+    $(document).ready(function() {
+        // Set default selections
+        $('#createUserForm select[name="role"]').val('student');
+        $('#createUserForm select[name="department"]').val('IT');
+        
+        // Test Database Connection
+        $('#testDbBtn').click(function() {
+            const btn = $(this);
+            const originalText = btn.html();
+            
+            btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2"></span>Testing...');
+            
+            $('#dbStatusBadge').removeClass('bg-success bg-danger bg-warning bg-secondary')
+                              .addClass('bg-warning')
+                              .text('Testing...');
+            
+            $('#dbState').html('<div class="text-center"><div class="spinner-border spinner-border-sm text-warning"></div><p class="mt-2">Testing database connection...</p></div>');
+            
+            $.ajax({
+                url: '/debug/db-test',
+                type: 'GET',
+                success: function(response) {
+                    console.log('DB Test Response:', response);
+                    
+                    if (response.success) {
+                        $('#dbStatusBadge').removeClass('bg-warning bg-danger bg-secondary')
+                                          .addClass('bg-success')
+                                          .html('<i class="fas fa-check-circle me-1"></i> Connected');
+                        
+                        let html = '<div class="alert alert-success mb-2">';
+                        html += '<i class="fas fa-check-circle me-2"></i><strong>Database Connected</strong>';
+                        if (response.result_type) {
+                            html += '<small class="d-block mt-1">Result type: ' + response.result_type + '</small>';
+                        }
+                        html += '</div>';
+                        html += '<div class="row">';
+                        html += '<div class="col-6"><small>Connection:</small><div class="fw-bold text-success">Active</div></div>';
+                        html += '<div class="col-6"><small>Total Users:</small><div class="fw-bold">' + (response.user_count || 0) + '</div></div>';
+                        html += '</div>';
+                        
+                        $('#dbState').html(html);
+                    } else {
+                        $('#dbStatusBadge').removeClass('bg-warning bg-success bg-secondary')
+                                          .addClass('bg-danger')
+                                          .html('<i class="fas fa-times-circle me-1"></i> Error');
+                        
+                        let html = '<div class="alert alert-danger mb-2">';
+                        html += '<i class="fas fa-times-circle me-2"></i><strong>Connection Failed</strong>';
+                        html += '</div>';
+                        html += '<p class="mb-1"><strong>Error:</strong> ' + (response.error || 'Unknown error') + '</p>';
+                        html += '<p class="small text-muted mb-0">Check Flask console for details</p>';
+                        
+                        $('#dbState').html(html);
+                    }
+                },
+                error: function(xhr) {
+                    $('#dbStatusBadge').removeClass('bg-warning bg-success bg-secondary')
+                                      .addClass('bg-danger')
+                                      .html('<i class="fas fa-times-circle me-1"></i> Error');
+                    
+                    let html = '<div class="alert alert-danger">';
+                    html += '<i class="fas fa-times-circle me-2"></i><strong>Request Failed</strong>';
+                    html += '</div>';
+                    html += '<p>HTTP ' + xhr.status + ': ' + xhr.statusText + '</p>';
+                    
+                    $('#dbState').html(html);
+                },
+                complete: function() {
+                    btn.prop('disabled', false).html(originalText);
+                }
+            });
+        });
+        
+        // Form Submission
+        $('#createUserForm').submit(function(e) {
+            e.preventDefault();
+            
+            const btn = $(this).find('button[type="submit"]');
+            const originalText = btn.html();
+            
+            btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2"></span>Creating...');
+            $('#result').empty();
+            
+            $.ajax({
+                url: '/admin/create-user',
+                type: 'POST',
+                data: $(this).serialize(),
+                success: function(response) {
+                    console.log('Create Response:', response);
+                    
+                    if (response.success) {
+                        let html = '<div class="alert alert-success alert-dismissible fade show">';
+                        html += '<i class="fas fa-check-circle me-2"></i><strong>Success!</strong>';
+                        html += '<p class="mb-1">' + (response.message || 'User created') + '</p>';
+                        html += '<small>User ID: ' + (response.user_id || 'N/A') + ' | Total Users: ' + (response.total_users || 'N/A') + '</small>';
+                        html += '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+                        html += '</div>';
+                        
+                        $('#result').html(html);
+                        
+                        // Reset email with new timestamp
+                        var newEmail = 'test' + Math.floor(Date.now() / 1000) + '@example.com';
+                        $('#createUserForm input[name="email"]').val(newEmail);
+                        
+                        // Update database status
+                        $('#testDbBtn').click();
+                    } else {
+                        let html = '<div class="alert alert-danger alert-dismissible fade show">';
+                        html += '<i class="fas fa-exclamation-circle me-2"></i><strong>Error!</strong>';
+                        html += '<p class="mb-0">' + (response.error || 'Unknown error') + '</p>';
+                        html += '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+                        html += '</div>';
+                        
+                        $('#result').html(html);
+                    }
+                },
+                error: function(xhr) {
+                    let html = '<div class="alert alert-danger">';
+                    html += '<i class="fas fa-exclamation-circle me-2"></i><strong>Request Failed</strong>';
+                    html += '<p>Status: ' + xhr.status + '</p>';
+                    html += '<p>Check console for details</p>';
+                    html += '</div>';
+                    
+                    $('#result').html(html);
+                },
+                complete: function() {
+                    btn.prop('disabled', false).html(originalText);
+                }
+            });
+        });
+        
+        // Test DB on page load
+        setTimeout(function() {
+            $('#testDbBtn').click();
+        }, 500);
+    });
+    </script>
+</body>
+</html>'''
+    
+    return html_form
+
+@app.route('/debug/user-password/<email>')
+def debug_user_password(email):
+    """Debug user password"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT id, email, password, name FROM users WHERE email = %s', (email,))
+            user = cursor.fetchone()
+        connection.close()
+        
+        if user:
+            # Test with common passwords
+            test_passwords = ["password123", "password", "admin123", "test123"]
+            
+            results = []
+            for test_pw in test_passwords:
+                matches = check_password(user['password'], test_pw)
+                results.append(f"{test_pw}: {'MATCHES' if matches else 'NO MATCH'}")
+            
+            return f'''
+            <div class="container mt-4">
+                <h2>Password Debug for {user['email']}</h2>
+                <div class="card">
+                    <div class="card-body">
+                        <p><strong>User ID:</strong> {user['id']}</p>
+                        <p><strong>Name:</strong> {user['name']}</p>
+                        <p><strong>Email:</strong> {user['email']}</p>
+                        <p><strong>Password Hash:</strong> {user['password']}</p>
+                        <p><strong>Hash Length:</strong> {len(user['password'])} characters</p>
+                        <p><strong>Hash Type:</strong> {"SHA256" if len(user['password']) == 64 else "Other"}</p>
+                        <hr>
+                        <h5>Password Tests:</h5>
+                        <ul>
+                            {"".join([f'<li>{result}</li>' for result in results])}
+                        </ul>
+                        <hr>
+                        <p>To reset password: <a href="/forgot-password?email={email}">Reset Password</a></p>
+                    </div>
+                </div>
+            </div>
+            '''
+        else:
+            return f"User {email} not found"
+            
+    except Exception as e:
+        return f"Error: {str(e)}"
+    
+@app.route('/admin/manage-user', methods=['GET', 'POST'])
+@admin_required
+def admin_manage_user():
+    """Unified user management - Create or Update user"""
+    
+    print(f"\n{'='*50}")
+    print(f"MANAGE USER DEBUG - {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*50}")
+    print(f"Request method: {request.method}")
+    print(f"Session user_id: {session.get('user_id')}")
+    print(f"Session role: {session.get('role')}")
+    
+    # Handle POST request
+    if request.method == 'POST':
+        action = request.form.get('action', 'create')
+        
+        if action == 'update':
+            return admin_update_user()
+        else:
+            # Original create user logic
+            print("\n[POST REQUEST STARTED - CREATE USER]")
+            
+            try:
+                # Get form data
+                name = request.form.get('name', '').strip()
+                email = request.form.get('email', '').strip()
+                password = request.form.get('password', '').strip()
+                role = request.form.get('role', '').strip()
+                department = request.form.get('department', '').strip()
+                
+                print(f"\n[FORM DATA RECEIVED]")
+                print(f"Name: {name}")
+                print(f"Email: {email}")
+                print(f"Password: {'*' * len(password) if password else 'Empty'}")
+                print(f"Role: {role}")
+                print(f"Department: {department}")
+                
+                # Validate required fields
+                if not all([name, email, password, role, department]):
+                    missing = []
+                    if not name: missing.append('Name')
+                    if not email: missing.append('Email')
+                    if not password: missing.append('Password')
+                    if not role: missing.append('Role')
+                    if not department: missing.append('Department')
+                    
+                    error_msg = f"Missing required fields: {', '.join(missing)}"
+                    print(f"[ERROR] {error_msg}")
+                    return jsonify({'success': False, 'error': error_msg})
+                
+                # Validate email format
+                if '@' not in email or '.' not in email:
+                    error_msg = "Invalid email format"
+                    print(f"[ERROR] {error_msg}")
+                    return jsonify({'success': False, 'error': error_msg})
+                
+                # Get database connection
+                try:
+                    print("\n[ATTEMPTING DATABASE CONNECTION]")
+                    from app import get_db
+                    connection = get_db()
+                    print("[SUCCESS] Database connection established")
+                except Exception as e:
+                    error_msg = f"Database connection failed: {str(e)}"
+                    print(f"[ERROR] {error_msg}")
+                    traceback.print_exc()
+                    return jsonify({'success': False, 'error': error_msg}), 500
+                
+                try:
+                    cursor = connection.cursor()
+                    print("[SUCCESS] Database cursor created")
+                    
+                    # Check if email already exists
+                    cursor.execute("SELECT id, name FROM users WHERE email = %s", (email,))
+                    existing_user = cursor.fetchone()
+                    
+                    if existing_user:
+                        existing_name = "Unknown"
+                        if isinstance(existing_user, dict):
+                            existing_name = existing_user.get('name', 'Unknown')
+                        elif isinstance(existing_user, (tuple, list)) and len(existing_user) > 1:
+                            existing_name = existing_user[1]
+                        
+                        error_msg = f"Email already registered to user: {existing_name}"
+                        print(f"[ERROR] {error_msg}")
+                        cursor.close()
+                        connection.close()
+                        return jsonify({'success': False, 'error': error_msg})
+                    
+                    print("[SUCCESS] Email is available")
+                    
+                    # Hash password
+                    print("\n[HASHING PASSWORD]")
+                    try:
+                        # Use the same hash_password function as registration
+                        hashed_password = handle_password(password)  # Changed from generate_password_hash()
+                        print("[SUCCESS] Password hashed successfully")
+                    except Exception as e:
+                        error_msg = f"Password hashing failed: {str(e)}"
+                        print(f"[ERROR] {error_msg}")
+                        cursor.close()
+                        connection.close()
+                        return jsonify({'success': False, 'error': error_msg})
+                    
+                    # Insert user into database
+                    print("\n[INSERTING USER INTO DATABASE]")
+                    
+                    # Check if department column exists
+                    sql = """
+                    INSERT INTO users (name, email, password, role, department) 
+                    VALUES (%s, %s, %s, %s, %s)
+                    """
+                    params = (name, email, hashed_password, role, department)
+                    
+                    print(f"SQL: {sql}")
+                    print(f"Params: {params}")
+                    
+                    try:
+                        cursor.execute(sql, params)
+                        user_id = cursor.lastrowid
+                        connection.commit()
+                        
+                        print(f"[SUCCESS] User inserted with ID: {user_id}")
+                        print(f"[SUCCESS] Rows affected: {cursor.rowcount}")
+                        
+                        # Get the new user
+                        cursor.execute("SELECT id, name, email, role, department FROM users WHERE id = %s", (user_id,))
+                        new_user_result = cursor.fetchone()
+                        
+                        new_user = {}
+                        if new_user_result:
+                            if isinstance(new_user_result, dict):
+                                new_user = {
+                                    'id': new_user_result.get('id'),
+                                    'name': new_user_result.get('name'),
+                                    'email': new_user_result.get('email'),
+                                    'role': new_user_result.get('role'),
+                                    'department': new_user_result.get('department')
+                                }
+                            elif isinstance(new_user_result, (tuple, list)):
+                                new_user = {
+                                    'id': new_user_result[0] if len(new_user_result) > 0 else None,
+                                    'name': new_user_result[1] if len(new_user_result) > 1 else '',
+                                    'email': new_user_result[2] if len(new_user_result) > 2 else '',
+                                    'role': new_user_result[3] if len(new_user_result) > 3 else '',
+                                    'department': new_user_result[4] if len(new_user_result) > 4 else ''
+                                }
+                            print(f"[SUCCESS] User verified: {new_user}")
+                        else:
+                            print("[WARNING] User created but not found during verification")
+                        
+                        # Get total user count
+                        cursor.execute("SELECT COUNT(*) FROM users")
+                        count_result = cursor.fetchone()
+                        
+                        total_users = 0
+                        if count_result:
+                            if isinstance(count_result, dict):
+                                total_users = list(count_result.values())[0]
+                            elif isinstance(count_result, (tuple, list)):
+                                total_users = count_result[0]
+                            else:
+                                total_users = count_result
+                        
+                        print(f"[SUCCESS] Total users in database: {total_users}")
+                        
+                        response_data = {
+                            'success': True,
+                            'message': f'User "{name}" created successfully!',
+                            'user_id': user_id,
+                            'total_users': total_users,
+                            'user': new_user
+                        }
+                        
+                        cursor.close()
+                        connection.close()
+                        print("[INFO] Database connection closed")
+                        
+                        return jsonify(response_data)
+                            
+                    except Exception as insert_error:
+                        connection.rollback()
+                        error_msg = f"Database insert failed: {str(insert_error)}"
+                        print(f"[ERROR] {error_msg}")
+                        print(f"[DEBUG] SQL Error details: {insert_error}")
+                        traceback.print_exc()
+                        cursor.close()
+                        connection.close()
+                        return jsonify({'success': False, 'error': error_msg})
+                            
+                except Exception as db_error:
+                    error_msg = f"Database operation failed: {str(db_error)}"
+                    print(f"[ERROR] {error_msg}")
+                    traceback.print_exc()
+                    try:
+                        cursor.close()
+                    except:
+                        pass
+                    try:
+                        connection.close()
+                    except:
+                        pass
+                    return jsonify({'success': False, 'error': error_msg})
+                    
+            except Exception as e:
+                error_msg = f"Unexpected error: {str(e)}"
+                print(f"[CRITICAL ERROR] {error_msg}")
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': error_msg})
+            
+            print("\n[POST REQUEST COMPLETED]")
+    
+    # Handle GET request - Show the form
+    print("\n[RENDERING MANAGE USER FORM]")
+    
+    # Fetch existing users for update dropdown
+    users_for_dropdown = []
+    try:
+        from app import get_db
+        connection = get_db()
+        cursor = connection.cursor()
+        cursor.execute("SELECT id, name, email FROM users ORDER BY name")
+        users_result = cursor.fetchall()
+        
+        for row in users_result:
+            if isinstance(row, dict):
+                users_for_dropdown.append({
+                    'id': row.get('id'),
+                    'name': row.get('name'),
+                    'email': row.get('email')
+                })
+            elif isinstance(row, (tuple, list)):
+                users_for_dropdown.append({
+                    'id': row[0] if len(row) > 0 else None,
+                    'name': row[1] if len(row) > 1 else '',
+                    'email': row[2] if len(row) > 2 else ''
+                })
+        
+        cursor.close()
+        connection.close()
+    except Exception as e:
+        print(f"[WARNING] Could not fetch users: {e}")
+    
+    # Generate users dropdown HTML
+    users_dropdown_html = '<option value="">Select a user to update...</option>'
+    for user in users_for_dropdown:
+        users_dropdown_html += f'<option value="{user["id"]}">{user["name"]} ({user["email"]})</option>'
+    
+    # Get roles and departments
+    existing_roles = ['student', 'teacher', 'admin']
+    existing_departments = ['IT', 'Data Science', 'AI/ML', 'ECE', 'EEE', 'MECH', 'CIVIL', 'MBA', 'PHYSICS', 'CHEMISTRY', 'MATHS', 'Others']
+    
+    # Try to fetch from database
+    try:
+        print("\n[FETCHING ROLES AND DEPARTMENTS FROM DATABASE]")
+        from app import get_db
+        connection = get_db()
+        cursor = connection.cursor()
+        
+        # Get distinct roles
+        cursor.execute("SELECT DISTINCT role FROM users WHERE role IS NOT NULL AND role != '' ORDER BY role")
+        roles_result = cursor.fetchall()
+        
+        if roles_result:
+            extracted_roles = []
+            for row in roles_result:
+                if isinstance(row, dict):
+                    role_val = row.get('role')
+                elif isinstance(row, (tuple, list)):
+                    role_val = row[0] if len(row) > 0 else None
+                else:
+                    role_val = row
+                
+                if role_val:
+                    extracted_roles.append(str(role_val))
+            
+            if extracted_roles:
+                existing_roles = extracted_roles
+                print(f"[SUCCESS] Found roles: {existing_roles}")
+        
+        # Get distinct departments
+        cursor.execute("SELECT DISTINCT department FROM users WHERE department IS NOT NULL AND department != '' ORDER BY department")
+        dept_result = cursor.fetchall()
+        
+        if dept_result:
+            extracted_depts = []
+            for row in dept_result:
+                if isinstance(row, dict):
+                    dept_val = row.get('department')
+                elif isinstance(row, (tuple, list)):
+                    dept_val = row[0] if len(row) > 0 else None
+                else:
+                    dept_val = row
+                
+                if dept_val:
+                    extracted_depts.append(str(dept_val))
+            
+            if extracted_depts:
+                existing_departments = extracted_depts
+                print(f"[SUCCESS] Found departments: {existing_departments}")
+        
+        cursor.close()
+        connection.close()
+        
+    except Exception as e:
+        print(f"[WARNING] Could not fetch roles/departments: {e}")
+        print("[INFO] Using default values")
+    
+    # Clean up lists
+    existing_roles = [str(role).strip() for role in existing_roles if role]
+    existing_departments = [str(dept).strip() for dept in existing_departments if dept]
+    
+    # Remove duplicates and sort
+    existing_roles = sorted(list(set(existing_roles)))
+    existing_departments = sorted(list(set(existing_departments)))
+    
+    # Set default values if lists are empty
+    if not existing_roles:
+        existing_roles = ['student', 'teacher', 'admin']
+    if not existing_departments:
+        existing_departments = ['IT', 'Computer Science', 'Electrical', 'Mechanical', 'Civil']
+    
+    # Generate timestamp for unique email
+    timestamp = int(time.time())
+    
+    # Generate role options HTML
+    role_options_html = ''.join([f'<option value="{role}">{role.title()}</option>' for role in existing_roles])
+    
+    # Generate department options HTML
+    department_options_html = ''.join([f'<option value="{dept}">{dept}</option>' for dept in existing_departments])
+    
+    # HTML form
+    html_form = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Users - Admin Panel</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }}
+        
+        .card {{
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            border: none;
+        }}
+        
+        .card-header {{
+            background: linear-gradient(135deg, #4e73df 0%, #224abe 100%);
+            color: white;
+            border-radius: 15px 15px 0 0 !important;
+            padding: 20px;
+        }}
+        
+        .form-control, .form-select {{
+            border-radius: 10px;
+            padding: 12px 15px;
+            border: 2px solid #e1e5e9;
+        }}
+        
+        .form-control:focus, .form-select:focus {{
+            border-color: #4e73df;
+            box-shadow: 0 0 0 3px rgba(78, 115, 223, 0.1);
+        }}
+        
+        .btn-primary {{
+            background: linear-gradient(135deg, #4e73df 0%, #224abe 100%);
+            border: none;
+            border-radius: 10px;
+            padding: 12px 25px;
+            font-weight: 600;
+        }}
+        
+        .btn-success {{
+            background: linear-gradient(135deg, #1cc88a 0%, #13855c 100%);
+            border: none;
+            border-radius: 10px;
+            padding: 12px 25px;
+            font-weight: 600;
+        }}
+        
+        .btn-secondary {{
+            background: #6c757d;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 25px;
+            font-weight: 600;
+        }}
+        
+        .btn-warning {{
+            background: linear-gradient(135deg, #f6c23e 0%, #dda20a 100%);
+            border: none;
+            border-radius: 10px;
+            padding: 12px 25px;
+            font-weight: 600;
+        }}
+        
+        .alert {{
+            border-radius: 10px;
+        }}
+        
+        .status-card {{
+            background: #f8f9fa;
+            border-left: 4px solid #4e73df;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+        }}
+        
+        .nav-tabs .nav-link {{
+            border-radius: 10px 10px 0 0;
+            font-weight: 600;
+        }}
+        
+        .password-note {{
+            font-size: 0.85rem;
+            color: #6c757d;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-10 col-lg-8">
+                <div class="card">
+                    <div class="card-header text-center">
+                        <h3 class="mb-2"><i class="fas fa-users-cog me-2"></i>User Management</h3>
+                        <p class="mb-0 opacity-75">Admin-only user creation and update</p>
+                    </div>
+                    
+                    <div class="card-body p-4">
+                        <div id="result" class="mb-3"></div>
+                        
+                        <ul class="nav nav-tabs mb-4" id="myTab" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="create-tab" data-bs-toggle="tab" data-bs-target="#create" type="button" role="tab" aria-controls="create" aria-selected="true">
+                                    <i class="fas fa-user-plus me-2"></i>Create User
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="update-tab" data-bs-toggle="tab" data-bs-target="#update" type="button" role="tab" aria-controls="update" aria-selected="false">
+                                    <i class="fas fa-user-edit me-2"></i>Update User
+                                </button>
+                            </li>
+                        </ul>
+                        
+                        <div class="tab-content" id="myTabContent">
+                            <!-- Create User Tab -->
+                            <div class="tab-pane fade show active" id="create" role="tabpanel" aria-labelledby="create-tab">
+                                <form id="createUserForm">
+                                    <input type="hidden" name="action" value="create">
+                                    
+                                    <div class="mb-3">
+                                        <label class="form-label">Full Name</label>
+                                        <input type="text" class="form-control" name="name" value="Test User" required>
+                                    </div>
+                                    
+                                    <div class="mb-3">
+                                        <label class="form-label">Email Address</label>
+                                        <input type="email" class="form-control" name="email" value="test{timestamp}@example.com" required>
+                                        <div class="form-text">Unique email required</div>
+                                    </div>
+                                    
+                                    <div class="mb-3">
+                                        <label class="form-label">Password</label>
+                                        <input type="password" class="form-control" name="password" value="password123" required>
+                                        <div class="form-text">Min 8 characters</div>
+                                    </div>
+                                    
+                                    <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Role</label>
+                                            <select class="form-select" name="role" required>
+                                                <option value="">Select Role</option>
+                                                {role_options_html}
+                                            </select>
+                                        </div>
+                                        
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Department</label>
+                                            <select class="form-select" name="department" required>
+                                                <option value="">Select Department</option>
+                                                <option value="IT">IT</option>
+                                                <option value="Data Science">Data Science</option>
+                                                <option value="AI/ML">AI/ML</option>
+                                                <option value="ECE">ECE</option>
+                                                <option value="EEE">EEE</option>
+                                                <option value="MECH">MECH</option>
+                                                <option value="CIVIL">CIVIL</option>
+                                                <option value="MBA">MBA</option>
+                                                <option value="PHYSICS">PHYSICS</option>
+                                                <option value="CHEMISTRY">CHEMISTRY</option>
+                                                <option value="MATHS">MATHS</option>
+                                                <option value="Others">Others</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="d-flex justify-content-between mt-4">
+                                        <button type="button" id="testDbBtn" class="btn btn-secondary">
+                                            <i class="fas fa-database me-2"></i>Test DB Connection
+                                        </button>
+                                        <button type="submit" class="btn btn-success">
+                                            <i class="fas fa-user-plus me-2"></i>Create User
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                            
+                            <!-- Update User Tab -->
+                            <div class="tab-pane fade" id="update" role="tabpanel" aria-labelledby="update-tab">
+                                <form id="updateUserForm">
+                                    <input type="hidden" name="action" value="update">
+                                    
+                                    <div class="mb-3">
+                                        <label class="form-label">Select User to Update</label>
+                                        <select class="form-select" id="userSelect" name="user_id" required>
+                                            {users_dropdown_html}
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="mb-3">
+                                        <button type="button" id="loadUserBtn" class="btn btn-warning">
+                                            <i class="fas fa-sync me-2"></i>Load User Details
+                                        </button>
+                                    </div>
+                                    
+                                    <div id="updateFields">
+                                        <div class="mb-3">
+                                            <label class="form-label">Full Name</label>
+                                            <input type="text" class="form-control" name="name" required disabled>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Email Address</label>
+                                            <input type="email" class="form-control" name="email" required disabled>
+                                        </div>
+                                        
+                                        <div class="mb-3">
+                                            <label class="form-label">Password</label>
+                                            <input type="password" class="form-control" name="password" placeholder="Leave empty to keep current password">
+                                            <div class="password-note">Only enter if you want to change the password</div>
+                                        </div>
+                                        
+                                        <div class="row">
+                                            <div class="col-md-6 mb-3">
+                                                <label class="form-label">Role</label>
+                                                <select class="form-select" name="role" required disabled>
+                                                    <option value="">Select Role</option>
+                                                    {role_options_html}
+                                                </select>
+                                            </div>
+                                            
+                                            <div class="col-md-6 mb-3">
+                                                <label class="form-label">Department</label>
+                                                <select class="form-select" name="department" required disabled>
+                                                    <option value="">Select Department</option>
+                                                    {department_options_html}
+                                                </select>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="d-flex justify-content-between mt-4">
+                                            <button type="button" id="testDbBtnUpdate" class="btn btn-secondary">
+                                                <i class="fas fa-database me-2"></i>Test DB Connection
+                                            </button>
+                                            <button type="submit" class="btn btn-primary" disabled>
+                                                <i class="fas fa-save me-2"></i>Update User
+                                            </button>
+                                        </div>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                        
+                        <div class="status-card mt-4">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h5 class="mb-0"><i class="fas fa-server me-2"></i>Database Status</h5>
+                                <span id="dbStatusBadge" class="badge bg-secondary">Not Tested</span>
+                            </div>
+                            <div id="dbState" class="text-muted">
+                                Click "Test DB Connection" to check database status
+                            </div>
+                        </div>
+                        
+                        <!-- Debug Info -->
+                        <div class="alert alert-info mt-3 small">
+                            <i class="fas fa-bug me-2"></i>
+                            <strong>Debug Info:</strong> Check Flask console for detailed database operations
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://code.jquery.com/jquery-3.6.4.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+    $(document).ready(function() {{
+        // Set default selections for create form
+        $('#createUserForm select[name="role"]').val('student');
+        $('#createUserForm select[name="department"]').val('IT');
+        
+        // Test Database Connection - Create Tab
+        $('#testDbBtn').click(function() {{
+            testDatabaseConnection();
+        }});
+        
+        // Test Database Connection - Update Tab
+        $('#testDbBtnUpdate').click(function() {{
+            testDatabaseConnection();
+        }});
+        
+        function testDatabaseConnection() {{
+            const btn = $('.btn-secondary:contains("Test DB Connection")');
+            const originalText = btn.html();
+            
+            btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2"></span>Testing...');
+            
+            $('#dbStatusBadge').removeClass('bg-success bg-danger bg-warning bg-secondary')
+                              .addClass('bg-warning')
+                              .text('Testing...');
+            
+            $('#dbState').html('<div class="text-center"><div class="spinner-border spinner-border-sm text-warning"></div><p class="mt-2">Testing database connection...</p></div>');
+            
+            $.ajax({{
+                url: '/debug/db-test',
+                type: 'GET',
+                success: function(response) {{
+                    console.log('DB Test Response:', response);
+                    
+                    if (response.success) {{
+                        $('#dbStatusBadge').removeClass('bg-warning bg-danger bg-secondary')
+                                          .addClass('bg-success')
+                                          .html('<i class="fas fa-check-circle me-1"></i> Connected');
+                        
+                        let html = '<div class="alert alert-success mb-2">';
+                        html += '<i class="fas fa-check-circle me-2"></i><strong>Database Connected</strong>';
+                        if (response.result_type) {{
+                            html += '<small class="d-block mt-1">Result type: ' + response.result_type + '</small>';
+                        }}
+                        html += '</div>';
+                        html += '<div class="row">';
+                        html += '<div class="col-6"><small>Connection:</small><div class="fw-bold text-success">Active</div></div>';
+                        html += '<div class="col-6"><small>Total Users:</small><div class="fw-bold">' + (response.user_count || 0) + '</div></div>';
+                        html += '</div>';
+                        
+                        $('#dbState').html(html);
+                    }} else {{
+                        $('#dbStatusBadge').removeClass('bg-warning bg-success bg-secondary')
+                                          .addClass('bg-danger')
+                                          .html('<i class="fas fa-times-circle me-1"></i> Error');
+                        
+                        let html = '<div class="alert alert-danger mb-2">';
+                        html += '<i class="fas fa-times-circle me-2"></i><strong>Connection Failed</strong>';
+                        html += '</div>';
+                        html += '<p class="mb-1"><strong>Error:</strong> ' + (response.error || 'Unknown error') + '</p>';
+                        html += '<p class="small text-muted mb-0">Check Flask console for details</p>';
+                        
+                        $('#dbState').html(html);
+                    }}
+                }},
+                error: function(xhr) {{
+                    $('#dbStatusBadge').removeClass('bg-warning bg-success bg-secondary')
+                                      .addClass('bg-danger')
+                                      .html('<i class="fas fa-times-circle me-1"></i> Error');
+                    
+                    let html = '<div class="alert alert-danger">';
+                    html += '<i class="fas fa-times-circle me-2"></i><strong>Request Failed</strong>';
+                    html += '</div>';
+                    html += '<p>HTTP ' + xhr.status + ': ' + xhr.statusText + '</p>';
+                    
+                    $('#dbState').html(html);
+                }},
+                complete: function() {{
+                    btn.prop('disabled', false).html(originalText);
+                }}
+            }});
+        }}
+        
+        // Create User Form Submission
         $('#createUserForm').submit(function(e) {{
             e.preventDefault();
             
-            const formData = $(this).serialize();
+            const btn = $(this).find('button[type="submit"]');
+            const originalText = btn.html();
+            
+            btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2"></span>Creating...');
+            $('#result').empty();
             
             $.ajax({{
-                url: '/admin/create-user',
+                url: '/admin/manage-user',
                 type: 'POST',
-                data: formData,
-                beforeSend: function() {{
-                    $('button[type="submit"]').prop('disabled', true).html('<i class="fas fa-spinner fa-spin me-2"></i>Creating...');
-                }},
+                data: $(this).serialize(),
                 success: function(response) {{
+                    console.log('Create Response:', response);
+                    
                     if (response.success) {{
-                        alert('User created successfully!');
-                        window.location.href = '/admin';
+                        let html = '<div class="alert alert-success alert-dismissible fade show">';
+                        html += '<i class="fas fa-check-circle me-2"></i><strong>Success!</strong>';
+                        html += '<p class="mb-1">' + (response.message || 'User created') + '</p>';
+                        html += '<small>User ID: ' + (response.user_id || 'N/A') + ' | Total Users: ' + (response.total_users || 'N/A') + '</small>';
+                        html += '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+                        html += '</div>';
+                        
+                        $('#result').html(html);
+                        
+                        // Reset email with new timestamp
+                        var newEmail = 'test' + Math.floor(Date.now() / 1000) + '@example.com';
+                        $('#createUserForm input[name="email"]').val(newEmail);
+                        
+                        // Update users dropdown in update tab
+                        loadUsersForUpdate();
+                        
+                        // Update database status
+                        testDatabaseConnection();
                     }} else {{
-                        alert('Error: ' + response.error);
-                        $('button[type="submit"]').prop('disabled', false).html('<i class="fas fa-save me-2"></i>Create User');
+                        let html = '<div class="alert alert-danger alert-dismissible fade show">';
+                        html += '<i class="fas fa-exclamation-circle me-2"></i><strong>Error!</strong>';
+                        html += '<p class="mb-0">' + (response.error || 'Unknown error') + '</p>';
+                        html += '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+                        html += '</div>';
+                        
+                        $('#result').html(html);
                     }}
                 }},
-                error: function() {{
-                    alert('Network error. Please try again.');
-                    $('button[type="submit"]').prop('disabled', false).html('<i class="fas fa-save me-2"></i>Create User');
+                error: function(xhr) {{
+                    let html = '<div class="alert alert-danger">';
+                    html += '<i class="fas fa-exclamation-circle me-2"></i><strong>Request Failed</strong>';
+                    html += '<p>Status: ' + xhr.status + '</p>';
+                    html += '<p>Check console for details</p>';
+                    html += '</div>';
+                    
+                    $('#result').html(html);
+                }},
+                complete: function() {{
+                    btn.prop('disabled', false).html(originalText);
                 }}
             }});
         }});
+        
+        // Load user details for update
+        $('#loadUserBtn').click(function() {{
+            const userId = $('#userSelect').val();
+            
+            if (!userId) {{
+                alert('Please select a user first');
+                return;
+            }}
+            
+            const btn = $(this);
+            const originalText = btn.html();
+            
+            btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2"></span>Loading...');
+            
+            $.ajax({{
+                url: '/admin/get-user/' + userId,
+                type: 'GET',
+                success: function(response) {{
+                    if (response.success) {{
+                        const user = response.user;
+                        
+                        // Fill form fields
+                        $('#updateUserForm input[name="name"]').val(user.name).prop('disabled', false);
+                        $('#updateUserForm input[name="email"]').val(user.email).prop('disabled', false);
+                        $('#updateUserForm input[name="password"]').val('').prop('disabled', false);
+                        $('#updateUserForm select[name="role"]').val(user.role).prop('disabled', false);
+                        $('#updateUserForm select[name="department"]').val(user.department).prop('disabled', false);
+                        
+                        // Enable submit button
+                        $('#updateUserForm button[type="submit"]').prop('disabled', false);
+                        
+                        // Show success message
+                        $('#result').html('<div class="alert alert-success alert-dismissible fade show">' +
+                                         '<i class="fas fa-check-circle me-2"></i><strong>User Loaded!</strong>' +
+                                         '<p class="mb-0">' + user.name + ' (' + user.email + ')</p>' +
+                                         '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>' +
+                                         '</div>');
+                    }} else {{
+                        $('#result').html('<div class="alert alert-danger alert-dismissible fade show">' +
+                                         '<i class="fas fa-exclamation-circle me-2"></i><strong>Error!</strong>' +
+                                         '<p class="mb-0">' + (response.error || 'Failed to load user') + '</p>' +
+                                         '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>' +
+                                         '</div>');
+                    }}
+                }},
+                error: function(xhr) {{
+                    $('#result').html('<div class="alert alert-danger">' +
+                                     '<i class="fas fa-exclamation-circle me-2"></i><strong>Request Failed</strong>' +
+                                     '<p>Status: ' + xhr.status + '</p>' +
+                                     '</div>');
+                }},
+                complete: function() {{
+                    btn.prop('disabled', false).html(originalText);
+                }}
+            }});
+        }});
+        
+        // Update User Form Submission
+        $('#updateUserForm').submit(function(e) {{
+            e.preventDefault();
+            
+            const btn = $(this).find('button[type="submit"]');
+            const originalText = btn.html();
+            
+            btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2"></span>Updating...');
+            $('#result').empty();
+            
+            $.ajax({{
+                url: '/admin/manage-user',
+                type: 'POST',
+                data: $(this).serialize(),
+                success: function(response) {{
+                    console.log('Update Response:', response);
+                    
+                    if (response.success) {{
+                        let html = '<div class="alert alert-success alert-dismissible fade show">';
+                        html += '<i class="fas fa-check-circle me-2"></i><strong>Success!</strong>';
+                        html += '<p class="mb-1">' + (response.message || 'User updated') + '</p>';
+                        html += '<small>User ID: ' + (response.user_id || 'N/A') + ' | Total Users: ' + (response.total_users || 'N/A') + '</small>';
+                        html += '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+                        html += '</div>';
+                        
+                        $('#result').html(html);
+                        
+                        // Reload users dropdown
+                        loadUsersForUpdate();
+                        
+                        // Update database status
+                        testDatabaseConnection();
+                    }} else {{
+                        let html = '<div class="alert alert-danger alert-dismissible fade show">';
+                        html += '<i class="fas fa-exclamation-circle me-2"></i><strong>Error!</strong>';
+                        html += '<p class="mb-0">' + (response.error || 'Unknown error') + '</p>';
+                        html += '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+                        html += '</div>';
+                        
+                        $('#result').html(html);
+                    }}
+                }},
+                error: function(xhr) {{
+                    let html = '<div class="alert alert-danger">';
+                    html += '<i class="fas fa-exclamation-circle me-2"></i><strong>Request Failed</strong>';
+                    html += '<p>Status: ' + xhr.status + '</p>';
+                    html += '</div>';
+                    
+                    $('#result').html(html);
+                }},
+                complete: function() {{
+                    btn.prop('disabled', false).html(originalText);
+                }}
+            }});
+        }});
+        
+        // Function to load users for update dropdown
+        function loadUsersForUpdate() {{
+            $.ajax({{
+                url: '/admin/get-users',
+                type: 'GET',
+                success: function(response) {{
+                    if (response.success) {{
+                        let options = '<option value="">Select a user to update...</option>';
+                        response.users.forEach(function(user) {{
+                            options += '<option value="' + user.id + '">' + user.name + ' (' + user.email + ')</option>';
+                        }});
+                        $('#userSelect').html(options);
+                    }}
+                }},
+                error: function() {{
+                    console.log('Failed to load users for update');
+                }}
+            }});
+        }}
+        
+        // When switching to update tab, load users
+        $('#update-tab').click(function() {{
+            loadUsersForUpdate();
+        }});
+        
+        // Test DB on page load
+        setTimeout(function() {{
+            testDatabaseConnection();
+        }}, 500);
+    }});
     </script>
-    '''
-    return html_wrapper('Create User', content, get_navbar(), '')
+</body>
+</html>'''
+    
+    return html_form
 
-# Add to admin panel a link to create users
-# Update the admin_panel route to include a "Create User" button
-# Add this in the admin_panel function's content, in the "Quick Actions" section:
-'''
-<div class="col-md-3 mb-3">
-    <a href="/admin/create-user" class="btn btn-outline-success w-100">
-        <i class="fas fa-user-plus me-2"></i>Create User
-    </a>
-</div>
-'''
+@app.route('/admin/fix-passwords')
+@admin_required
+def admin_fix_passwords():
+    """Fix passwords for users who can't login"""
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get all users
+            cursor.execute("SELECT id, email, password FROM users")
+            users = cursor.fetchall()
+            
+            fixed_count = 0
+            for user in users:
+                user_id = user['id']
+                email = user['email']
+                current_hash = user['password']
+                
+                # Check if this looks like a Werkzeug hash (starts with specific patterns)
+                if current_hash.startswith('pbkdf2:') or current_hash.startswith('scrypt:') or current_hash.startswith('bcrypt:'):
+                    # This is a Werkzeug hash, we need to reset it
+                    # Use a default password
+                    default_password = "password123"
+                    new_hash = hash_password(default_password)
+                    
+                    cursor.execute(
+                        "UPDATE users SET password = %s WHERE id = %s",
+                        (new_hash, user_id)
+                    )
+                    print(f"Fixed password for user {email} (ID: {user_id})")
+                    print(f"New password: {default_password}")
+                    fixed_count += 1
+            
+            connection.commit()
+        
+        connection.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Fixed {fixed_count} user passwords. Default password is "password123"'
+        })
+        
+    except Exception as e:
+        print(f"Error fixing passwords: {e}")
+        return jsonify({'success': False, 'error': str(e)})
 
 # Add cleanup job for expired OTPs (optional, can be run periodically)
 def cleanup_expired_otps():
@@ -5642,6 +7515,8 @@ def get_navbar():
     if session['role'] in ['admin', 'super_admin']:
         admin_items.append('<a class="dropdown-item" href="/admin"><i class="fas fa-cogs me-2"></i>Admin Panel</a>')
         admin_items.append('<a class="dropdown-item" href="/admin/test"><i class="fas fa-vial me-2"></i>System Test</a>')
+        admin_items.append('<a class="dropdown-item" href="/admin/manage-user"><i class="fa fa-user me-2"></i>Create User</a>')
+
 
 
         

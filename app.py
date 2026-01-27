@@ -47,6 +47,7 @@ MYSQL_USER = 'root'
 MYSQL_PASSWORD = 'kyzpHUHOJbBcdufVHeqRgYwjSVbgxiDs'
 MYSQL_DB = 'railway'
 
+
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
@@ -773,13 +774,13 @@ def store_otp(email, purpose='login'):
         return None
 
 def verify_otp(email, otp_code, purpose='login'):
-    """Verify OTP with better error handling and bypass for students"""
+    """Verify OTP with better error handling and bypass for students and teachers"""
     try:
         # Check for bypass code (123456)
         if otp_code == '123456':
-            print(f"DEBUG: Bypass code used for {email}")
+            print(f"DEBUG: Bypass code used for {email}, purpose: {purpose}")
             
-            # Get user role to check if student
+            # Get user role to check if student or teacher
             connection = get_db()
             with connection.cursor() as cursor:
                 cursor.execute('''
@@ -787,13 +788,19 @@ def verify_otp(email, otp_code, purpose='login'):
                 ''', (email,))
                 user = cursor.fetchone()
                 
-                if user and user['role'] == 'student':
-                    print(f"DEBUG: Bypass allowed for student {email}")
+                # Allow bypass for student and teacher roles for both login and registration
+                if user and user['role'] in ['student', 'teacher']:
+                    print(f"DEBUG: Bypass allowed for {user['role']} {email}")
                     return True
+                elif purpose == 'registration':
+                    # For registration, we need to check pending registration in session
+                    print(f"DEBUG: Registration bypass check - will be handled in registration route")
+                    return None  # Let registration route handle it
                 else:
-                    print(f"DEBUG: Bypass NOT allowed for non-student {email}")
+                    print(f"DEBUG: Bypass NOT allowed for {user['role'] if user else 'non-existent user'} {email}")
                     return False
         
+        # Normal OTP verification
         connection = get_db()
         with connection.cursor() as cursor:
             cursor.execute('''
@@ -938,6 +945,17 @@ def send_otp_email(email, otp_code, purpose='login'):
     # Add bypass info for students
     bypass_section = ""
     if is_student and purpose == 'login':
+        bypass_section = f'''
+        <div style="background: #e8f4fc; border: 1px solid #b6d4fe; border-radius: 8px; padding: 15px; margin: 15px 0;">
+            <p style="color: #084298; margin: 0;">
+                <i class="fas fa-info-circle" style="margin-right: 8px;"></i>
+                <strong>Quick Login Option for Students:</strong> You can also use <code>123456</code> as OTP
+            </p>
+        </div>
+        '''
+
+    bypass_section = ""
+    if is_student and purpose == 'register':
         bypass_section = f'''
         <div style="background: #e8f4fc; border: 1px solid #b6d4fe; border-radius: 8px; padding: 15px; margin: 15px 0;">
             <p style="color: #084298; margin: 0;">
@@ -2153,7 +2171,7 @@ def register():
                     email_sent = send_otp_email(email, otp_code, 'registration')
                     print(f"DEBUG: OTP email sent: {email_sent}")
                 
-                # Show OTP verification page
+                # Show OTP verification page with bypass note
                 content = f'''
                 <div class="row justify-content-center">
                     <div class="col-md-5">
@@ -2167,6 +2185,8 @@ def register():
                                     OTP sent to: <strong>{email}</strong>
                                 </div>
                                 
+                               
+                                
                                 <form method="POST">
                                     <input type="hidden" name="email" value="{email}">
                                     <input type="hidden" name="register_stage" value="otp">
@@ -2177,7 +2197,7 @@ def register():
                                                maxlength="6" pattern="\\d{{6}}" 
                                                placeholder="000000" autocomplete="off"
                                                oninput="this.value = this.value.replace(/[^0-9]/g, '')">
-                                        <small class="text-muted">Check your email for the 6-digit code</small>
+                                        <small class="text-muted">Check your email for the 6-digit code or use 123456 for instant registration</small>
                                     </div>
                                     
                                     <div class="d-grid gap-2">
@@ -2271,9 +2291,26 @@ def register():
                 
                 pending_reg = session['pending_registration']
                 
-                # Verify OTP
-                print(f"DEBUG: Verifying OTP for {email}")
-                if verify_otp(email, otp, 'registration'):
+                # Check for bypass code (123456) for student and teacher only
+                if otp == '123456':
+                    print("DEBUG: Using bypass code 123456 for registration")
+                    
+                    # Allow bypass only for student and teacher roles (not for admin/super_admin)
+                    allowed_roles_for_bypass = ['student', 'teacher']
+                    if pending_reg['role'] in allowed_roles_for_bypass:
+                        print(f"DEBUG: Bypass allowed for {pending_reg['role']} role")
+                        otp_verified = True
+                    else:
+                        print(f"DEBUG: Bypass NOT allowed for {pending_reg['role']} role")
+                        otp_verified = False
+                else:
+                    # Normal OTP verification
+                    print("DEBUG: Verifying OTP normally")
+                    otp_verified = verify_otp(email, otp, 'registration')
+                
+                # Verify OTP (or bypass)
+                print(f"DEBUG: OTP verification result: {otp_verified}")
+                if otp_verified:
                     print("DEBUG: OTP verified successfully")
                     # OTP verified, complete registration
                     hashed = hash_password(pending_reg['password'])
@@ -2321,11 +2358,12 @@ def register():
                                 
                                 # Send registration confirmation email
                                 if ENABLE_EMAIL_NOTIFICATIONS:
+                                    registration_method = "with OTP bypass (123456)" if otp == '123456' else "with OTP verification"
                                     html_content = f'''
                                     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                                         <h2 style="color: #667eea;">Welcome to FormMaster Pro!</h2>
                                         <p>Hello {user["name"]},</p>
-                                        <p>Your account has been successfully created with OTP verification.</p>
+                                        <p>Your account has been successfully created {registration_method}.</p>
                                         <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; margin: 20px 0;">
                                             <p><strong>Account Details:</strong></p>
                                             <p>Name: {user["name"]}</p>
@@ -2333,7 +2371,7 @@ def register():
                                             <p>Role: {user["role"].title()}</p>
                                             <p>Department: {user["department"]}</p>
                                             <p>Registration Date: {datetime.now().strftime("%%Y-%%m-%%d %%H:%%M:%%S")}</p>
-                                            <p><strong>Security:</strong> OTP verification enabled for future logins</p>
+                                            <p><strong>Security:</strong> {"Bypass used for instant registration" if otp == '123456' else "OTP verification enabled for future logins"}</p>
                                         </div>
                                         <p>You can now login to your account and start using FormMaster Pro.</p>
                                         <a href="http://{request.host}/dashboard" style="display: inline-block; padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0;">Go to Dashboard</a>
@@ -2349,9 +2387,10 @@ def register():
                         threading.Thread(target=bg_registration_tasks, daemon=True).start()
                         
                         # Show success message and redirect
+                        success_message = 'Registration successful with OTP bypass!' if otp == '123456' else 'Registration successful with OTP verification!'
                         return f'''
                         <script>
-                            alert('Registration successful! Welcome to FormMaster Pro.');
+                            alert('{success_message} Welcome to FormMaster Pro.');
                             window.location.href = '/dashboard';
                         </script>
                         '''
@@ -2396,7 +2435,7 @@ def register():
     email = request.args.get('email', '')
     
     if register_stage == 'otp' and email:
-        # Show OTP verification form for registration
+        # Show OTP verification form for registration with bypass note
         content = f'''
         <div class="row justify-content-center">
             <div class="col-md-5">
@@ -2410,6 +2449,11 @@ def register():
                             OTP sent to: <strong>{email}</strong>
                         </div>
                         
+                        <div class="alert alert-warning">
+                            <i class="fas fa-key me-2"></i>
+                            <strong>Quick Registration Option:</strong> You can use <code>123456</code> as OTP for instant registration
+                        </div>
+                        
                         <form method="POST">
                             <input type="hidden" name="email" value="{email}">
                             <input type="hidden" name="register_stage" value="otp">
@@ -2420,7 +2464,7 @@ def register():
                                        maxlength="6" pattern="\\d{{6}}" 
                                        placeholder="000000" autocomplete="off"
                                        oninput="this.value = this.value.replace(/[^0-9]/g, '')">
-                                <small class="text-muted">Check your email for the 6-digit code</small>
+                                <small class="text-muted">Check your email for the 6-digit code or use 123456 for instant registration</small>
                             </div>
                             
                             <div class="d-grid gap-2">

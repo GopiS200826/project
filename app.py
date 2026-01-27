@@ -25,6 +25,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
 from reportlab.lib.units import inch
+from datetime import datetime, timedelta
+from decimal import Decimal
+import traceback
+from flask import jsonify, request, session
+from flask import make_response, jsonify, request, session, redirect, url_for
 import io
 
 # Create Flask app ONCE
@@ -34,6 +39,7 @@ app.secret_key = 'your-secret-key-change-in-production'  # Make sure this is set
 # OTP Configuration
 OTP_EXPIRY_MINUTES = 10
 OTP_LENGTH = 6
+
 
 # Database Configuration
 MYSQL_HOST = 'mysql-vdry.railway.internal'
@@ -767,8 +773,27 @@ def store_otp(email, purpose='login'):
         return None
 
 def verify_otp(email, otp_code, purpose='login'):
-    """Verify OTP with better error handling"""
+    """Verify OTP with better error handling and bypass for students"""
     try:
+        # Check for bypass code (123456)
+        if otp_code == '123456':
+            print(f"DEBUG: Bypass code used for {email}")
+            
+            # Get user role to check if student
+            connection = get_db()
+            with connection.cursor() as cursor:
+                cursor.execute('''
+                    SELECT role FROM users WHERE email = %s
+                ''', (email,))
+                user = cursor.fetchone()
+                
+                if user and user['role'] == 'student':
+                    print(f"DEBUG: Bypass allowed for student {email}")
+                    return True
+                else:
+                    print(f"DEBUG: Bypass NOT allowed for non-student {email}")
+                    return False
+        
         connection = get_db()
         with connection.cursor() as cursor:
             cursor.execute('''
@@ -794,7 +819,7 @@ def verify_otp(email, otp_code, purpose='login'):
     except Exception as e:
         print(f"Error verifying OTP: {e}")
         return False
-
+    
 @app.route('/test-pdf')
 @login_required
 def test_pdf():
@@ -882,7 +907,7 @@ def test_otp():
         '''
 
 def send_otp_email(email, otp_code, purpose='login'):
-    """Send OTP via email"""
+    """Send OTP via email with bypass information for students"""
     if not ENABLE_EMAIL_NOTIFICATIONS:
         return True
     
@@ -893,6 +918,34 @@ def send_otp_email(email, otp_code, purpose='login'):
     }.get(purpose, 'Verification')
     
     subject = f'{purpose_text} OTP - FormMaster Pro'
+    
+    # Check if user is student to include bypass info
+    connection = None
+    is_student = False
+    try:
+        connection = get_db()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT role FROM users WHERE email = %s', (email,))
+            user = cursor.fetchone()
+            if user and user['role'] == 'student':
+                is_student = True
+    except Exception as e:
+        print(f"Error checking user role: {e}")
+    finally:
+        if connection:
+            connection.close()
+    
+    # Add bypass info for students
+    bypass_section = ""
+    if is_student and purpose == 'login':
+        bypass_section = f'''
+        <div style="background: #e8f4fc; border: 1px solid #b6d4fe; border-radius: 8px; padding: 15px; margin: 15px 0;">
+            <p style="color: #084298; margin: 0;">
+                <i class="fas fa-info-circle" style="margin-right: 8px;"></i>
+                <strong>Quick Login Option for Students:</strong> You can also use <code>123456</code> as OTP
+            </p>
+        </div>
+        '''
     
     html_content = f'''
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -916,6 +969,8 @@ def send_otp_email(email, otp_code, purpose='login'):
                     </div>
                 </div>
             </div>
+            
+            {bypass_section}
             
             <p style="color: #666; font-size: 14px;">
                 <strong>Important:</strong>
@@ -1287,161 +1342,7 @@ def html_wrapper(title, content, navbar='', scripts=''):
     '''
     return html
 
-def get_navbar():
-    if 'user_id' not in session:
-        return ''
-    
-    # Get unread notification count
-    unread_count = get_unread_notification_count(session['user_id'])
-    notification_badge = ''
-    if unread_count > 0:
-        notification_badge = f'<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">{unread_count}</span>'
-    
-    user_badge = ''
-    if session['role'] == 'super_admin':
-        user_badge = '<span class="badge badge-super-admin">SUPER ADMIN</span>'
-    elif session['role'] == 'admin':
-        user_badge = '<span class="badge bg-danger">ADMIN</span>'
-    elif session['role'] == 'teacher':
-        user_badge = '<span class="badge bg-warning">TEACHER</span>'
-    else:
-        user_badge = '<span class="badge student-stats-card">STUDENT</span>'
-    
-    dept_badge = '<span class="badge bg-dark ms-2">' + session.get('department', 'N/A') + '</span>'
-    
-    nav_links = '''
-    <li><a class="dropdown-item" href="/dashboard"><i class="fas fa-home me-2"></i>Dashboard</a></li>
-    '''
-    
-    if session['role'] in ['teacher', 'admin', 'super_admin']:
-        nav_links += '''
-        <li><a class="dropdown-item" href="/create-form"><i class="fas fa-plus me-2"></i>Create Form</a></li>
-        <li><a class="dropdown-item" href="/form-requests"><i class="fas fa-clock me-2"></i>Pending Requests</a></li>
-        <li><a class="dropdown-item" href="/review-forms"><i class="fas fa-check-circle me-2"></i>Review Forms</a></li>
-        <li><a class="dropdown-item" href="/teacher-analytics"><i class="fas fa-chart-bar me-2"></i>Analytics</a></li>
-        '''
-    
-    if session['role'] == 'student':
-        nav_links += '''
-        <li><a class="dropdown-item" href="/create-student-form"><i class="fas fa-plus-circle me-2"></i>Create Form</a></li>
-        <li><a class="dropdown-item" href="/my-submissions"><i class="fas fa-history me-2"></i>My Submissions</a></li>
-        <li><a class="dropdown-item" href="/my-responses"><i class="fas fa-chart-bar me-2"></i>My Results</a></li>
-        '''
-    
-    if session['role'] in ['admin', 'super_admin']:
-        nav_links += '''
-        <li><a class="dropdown-item" href="/admin"><i class="fas fa-cogs me-2"></i>Admin Panel</a></li>
-        <li><a class="dropdown-item" href="/admin/test"><i class="fas fa-vial me-2"></i>System Test</a></li>
-        '''
-    
-    return f'''
-    <nav class="navbar navbar-expand-lg">
-        <div class="container">
-            <a class="navbar-brand text-dark fw-bold" href="/dashboard">
-                <i class="fas fa-poll me-2"></i>FormMaster Pro
-                {dept_badge}
-            </a>
-            <div class="d-flex align-items-center">
-                <!-- Notifications Dropdown -->
-                <div class="dropdown me-3">
-                    <button class="btn btn-outline-secondary position-relative" type="button" 
-                            id="notificationDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                        <i class="fas fa-bell"></i>
-                        {notification_badge}
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="notificationDropdown" style="min-width: 350px;">
-                        <li class="dropdown-header d-flex justify-content-between align-items-center">
-                            <span>Notifications</span>
-                            <small>
-                                <a href="/notifications" class="text-decoration-none">View All</a>
-                            </small>
-                        </li>
-                        <li><hr class="dropdown-divider"></li>
-                        <div id="notification-list" class="notification-list">
-                            <!-- Notifications will be loaded via AJAX -->
-                            <li class="text-center py-3">
-                                <div class="spinner-border spinner-border-sm text-primary" role="status">
-                                    <span class="visually-hidden">Loading...</span>
-                                </div>
-                                <span class="ms-2">Loading notifications...</span>
-                            </li>
-                        </div>
-                        <li><hr class="dropdown-divider"></li>
-                        <li class="text-center">
-                            <a href="/notifications" class="dropdown-item">
-                                <i class="fas fa-list me-2"></i>View All Notifications
-                            </a>
-                        </li>
-                    </ul>
-                </div>
-                
-                <!-- User Profile Dropdown -->
-                <div class="dropdown">
-                    <button class="btn btn-outline-dark dropdown-toggle d-flex align-items-center" type="button" 
-                            id="userDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                        <i class="fas fa-user-circle me-2 fs-4"></i>
-                        <div class="text-start">
-                            <div class="fw-bold">{session["name"]}</div>
-                            <small>{user_badge}</small>
-                        </div>
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
-                        {nav_links}
-                        <li><a class="dropdown-item" href="/notifications">
-                            <i class="fas fa-bell me-2"></i>Notifications
-                            {f'<span class="badge bg-danger ms-2">{unread_count}</span>' if unread_count > 0 else ''}
-                        </a></li>
-                        <li><hr class="dropdown-divider"></li>
-                        <li><a class="dropdown-item text-danger" href="/logout">
-                            <i class="fas fa-sign-out-alt me-2"></i>Logout
-                        </a></li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-    </nav>
-    <script>
-        $(document).ready(function() {{
-            loadNotifications();
-            
-            // Load notifications every 30 seconds
-            setInterval(loadNotifications, 30000);
-        }});
-        
-        function loadNotifications() {{
-            $.ajax({{
-                url: '/api/notifications/recent',
-                type: 'GET',
-                success: function(response) {{
-                    if (response.success) {{
-                        $('#notification-list').html(response.html);
-                        // Update notification badge
-                        if (response.unread_count > 0) {{
-                            $('.notification-badge').html('<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">' + response.unread_count + '</span>');
-                        }} else {{
-                            $('.notification-badge').html('');
-                        }}
-                    }}
-                }},
-                error: function() {{
-                    $('#notification-list').html('<li class="text-center py-3 text-danger">Error loading notifications</li>');
-                }}
-            }});
-        }}
-        
-        function markAsRead(notificationId) {{
-            $.ajax({{
-                url: '/api/notifications/' + notificationId + '/read',
-                type: 'POST',
-                success: function(response) {{
-                    if (response.success) {{
-                        loadNotifications(); // Reload notifications
-                    }}
-                }}
-            }});
-        }}
-    </script>
-    '''
+
 @app.route('/verify-otp', methods=['POST'])
 def verify_otp_endpoint():
     """Endpoint for OTP verification - FIXED VERSION"""
@@ -3126,6 +3027,7 @@ def admin_create_user():
                             </button>
                             <a href="/admin" class="btn btn-secondary">Back to Admin Panel</a>
                         </div>
+                        
                     </form>
                 </div>
             </div>
@@ -5686,7 +5588,8 @@ def get_navbar():
         main_nav_items.append('<a class="nav-link" href="/review-forms"><i class="fas fa-check-circle me-2"></i>Review Forms</a>')
         quick_access_items.append('<a class="dropdown-item" href="/form-requests"><i class="fas fa-clock me-2"></i>Pending Requests</a>')
         quick_access_items.append('<a class="dropdown-item" href="/teacher-analytics"><i class="fas fa-chart-bar me-2"></i>Analytics</a>')
-    
+        quick_access_items.append('<a class="nav-link" href="/reports"><i class="fas fa-check-circle me-2"></i>Reports</a>')
+
     if session['role'] == 'student':
         main_nav_items.append('<a class="nav-link" href="/create-student-form"><i class="fas fa-plus-circle me-2"></i>Create Form</a>')
         main_nav_items.append('<a class="nav-link" href="/my-submissions"><i class="fas fa-history me-2"></i>My Submissions</a>')
@@ -5695,6 +5598,10 @@ def get_navbar():
     if session['role'] in ['admin', 'super_admin']:
         admin_items.append('<a class="dropdown-item" href="/admin"><i class="fas fa-cogs me-2"></i>Admin Panel</a>')
         admin_items.append('<a class="dropdown-item" href="/admin/test"><i class="fas fa-vial me-2"></i>System Test</a>')
+
+
+        
+    
     
     # Profile icon with initials
     user_name = session["name"]
@@ -5745,6 +5652,8 @@ def get_navbar():
             </a>
         </div>
         '''
+    
+    
     
     # Build mobile navigation (collapsible)
     mobile_nav = '''
@@ -9655,6 +9564,1776 @@ def assign_form(form_id):
         print(f"Assign form error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+
+# ========== REPORT FEATURE ==========
+@app.route('/reports', methods=['GET'])
+@login_required
+@teacher_required
+def reports_dashboard():
+    """Main reports dashboard"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        connection = get_db()
+        with connection.cursor() as cursor:
+            # Get department statistics for filters
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('SELECT DISTINCT department FROM users WHERE department IS NOT NULL ORDER BY department')
+                departments = [dept['department'] for dept in cursor.fetchall()]
+                
+                cursor.execute('SELECT DISTINCT role FROM users ORDER BY role')
+                roles = [role['role'] for role in cursor.fetchall()]
+            else:
+                # Teachers can only see their department
+                cursor.execute('SELECT department FROM users WHERE id = %s', (user_id,))
+                user_dept = cursor.fetchone()['department']
+                departments = [user_dept]
+                roles = ['student', 'teacher']
+            
+            # Get form statistics based on role
+            stats = {}
+            if user_role in ['admin', 'super_admin']:
+                cursor.execute('SELECT COUNT(*) as total_forms FROM forms')
+                stats['total_forms'] = cursor.fetchone()['total_forms']
+                
+                cursor.execute('SELECT COUNT(*) as total_users FROM users')
+                stats['total_users'] = cursor.fetchone()['total_users']
+                
+                cursor.execute('SELECT COUNT(*) as total_responses FROM responses')
+                stats['total_responses'] = cursor.fetchone()['total_responses']
+                
+                cursor.execute('SELECT COUNT(*) as total_assignments FROM assignments')
+                stats['total_assignments'] = cursor.fetchone()['total_assignments']
+            else:
+                cursor.execute('''
+                    SELECT COUNT(*) as total_forms FROM forms 
+                    WHERE department = %s OR created_by = %s
+                ''', (departments[0], user_id))
+                stats['total_forms'] = cursor.fetchone()['total_forms']
+                
+                cursor.execute('''
+                    SELECT COUNT(*) as total_users FROM users 
+                    WHERE department = %s
+                ''', (departments[0],))
+                stats['total_users'] = cursor.fetchone()['total_users']
+                
+                cursor.execute('''
+                    SELECT COUNT(*) as total_responses FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    WHERE f.department = %s OR f.created_by = %s
+                ''', (departments[0], user_id))
+                stats['total_responses'] = cursor.fetchone()['total_responses']
+                
+                cursor.execute('''
+                    SELECT COUNT(*) as total_assignments FROM assignments a
+                    JOIN forms f ON a.form_id = f.id
+                    WHERE f.department = %s OR f.created_by = %s
+                ''', (departments[0], user_id))
+                stats['total_assignments'] = cursor.fetchone()['total_assignments']
+            
+        connection.close()
+        
+        # Report types
+        report_types = [
+            {'id': 'user_report', 'name': 'User Report', 'description': 'User statistics and details'},
+            {'id': 'form_report', 'name': 'Form Report', 'description': 'Form statistics and details'},
+            {'id': 'response_report', 'name': 'Response Report', 'description': 'Response analysis'},
+            {'id': 'assignment_report', 'name': 'Assignment Report', 'description': 'Assignment tracking'},
+            {'id': 'performance_report', 'name': 'Performance Report', 'description': 'Student/Teacher performance'},
+            {'id': 'download_report', 'name': 'Download Report', 'description': 'Download request analytics'},
+            {'id': 'custom_report', 'name': 'Custom Report', 'description': 'Custom query builder'}
+        ]
+        
+        # Recent report templates (can be saved)
+        recent_templates = [
+            {'name': 'Student Performance Summary', 'type': 'performance', 'last_used': '2024-01-15'},
+            {'name': 'Form Usage Analytics', 'type': 'form', 'last_used': '2024-01-10'},
+            {'name': 'Department-wise Report', 'type': 'user', 'last_used': '2024-01-05'}
+        ]
+        
+        # Build dropdown options HTML
+        report_types_html = ''
+        for rt in report_types:
+            report_types_html += f'<option value="{rt["id"]}">{rt["name"]} - {rt["description"]}</option>'
+        
+        # Build recent templates HTML
+        recent_templates_html = ''
+        if recent_templates:
+            for t in recent_templates:
+                recent_templates_html += f'''
+                <div class="d-flex mb-3">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-file-alt text-primary mt-1"></i>
+                    </div>
+                    <div class="flex-grow-1 ms-3">
+                        <h6 class="mb-1">{t['name']}</h6>
+                        <p class="mb-0 text-muted small">{t['type']} Report</p>
+                        <small class="text-muted">Last used: {t['last_used']}</small>
+                        <div class="mt-2">
+                            <button class="btn btn-sm btn-outline-primary" onclick="loadTemplate('{t['type']}')">
+                                <i class="fas fa-redo me-1"></i> Use Again
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                '''
+        else:
+            recent_templates_html = '''
+            <div class="text-center py-3">
+                <i class="fas fa-clock fa-2x text-muted mb-2"></i>
+                <p class="text-muted">No recent templates</p>
+            </div>
+            '''
+        
+        # Escape JSON data for JavaScript
+        import json
+        departments_json = json.dumps(departments)
+        roles_json = json.dumps(roles)
+        
+        # JavaScript code - extracted to a separate variable for clarity
+        js_code = f'''
+        <script>
+        // Department and role data for JavaScript
+        const departments = {departments_json};
+        const roles = {roles_json};
+        const userRole = '{user_role}';
+        
+        // Report type configurations
+        const reportConfigs = {{
+            'user_report': {{
+                name: 'User Report',
+                fields: ['id', 'name', 'email', 'role', 'department', 'created_at'],
+                filters: ['department', 'role', 'date_range', 'active_status'],
+                group_by: ['department', 'role'],
+                sort_by: ['name', 'created_at', 'email']
+            }},
+            'form_report': {{
+                name: 'Form Report',
+                fields: ['id', 'title', 'form_type', 'department', 'created_by', 'created_at', 'is_published', 'response_count'],
+                filters: ['department', 'form_type', 'date_range', 'published_status'],
+                group_by: ['department', 'form_type'],
+                sort_by: ['title', 'created_at', 'response_count']
+            }},
+            'response_report': {{
+                name: 'Response Report',
+                fields: ['form_title', 'student_name', 'score', 'percentage', 'submitted_at', 'time_taken'],
+                filters: ['department', 'form_id', 'date_range', 'score_range'],
+                group_by: ['form_id', 'student_id'],
+                sort_by: ['submitted_at', 'score', 'percentage']
+            }},
+            'assignment_report': {{
+                name: 'Assignment Report',
+                fields: ['form_title', 'student_name', 'assigned_by', 'assigned_at', 'due_date', 'is_completed'],
+                filters: ['department', 'completion_status', 'date_range', 'overdue'],
+                group_by: ['form_id', 'assigned_by'],
+                sort_by: ['due_date', 'assigned_at', 'is_completed']
+            }},
+            'performance_report': {{
+                name: 'Performance Report',
+                fields: ['user_name', 'role', 'department', 'avg_score', 'total_responses', 'completion_rate'],
+                filters: ['department', 'role', 'date_range', 'performance_range'],
+                group_by: ['user_id', 'department'],
+                sort_by: ['avg_score', 'total_responses', 'completion_rate']
+            }},
+            'download_report': {{
+                name: 'Download Report',
+                fields: ['form_title', 'student_name', 'requested_at', 'access_granted', 'granted_at', 'download_count'],
+                filters: ['department', 'access_status', 'date_range'],
+                group_by: ['form_id', 'access_granted'],
+                sort_by: ['requested_at', 'granted_at', 'download_count']
+            }},
+            'custom_report': {{
+                name: 'Custom Report',
+                fields: [],
+                filters: [],
+                group_by: [],
+                sort_by: []
+            }}
+        }};
+        
+        let currentReportType = '';
+        let currentReportData = null;
+        
+        function loadSelectedReport() {{
+            const dropdown = document.getElementById('reportTypeDropdown');
+            const selectedValue = dropdown.value;
+            
+            if (!selectedValue) {{
+                showToast('Please select a report type first', 'warning');
+                return;
+            }}
+            
+            loadReportForm(selectedValue);
+        }}
+        
+        function loadReportForm(reportType) {{
+            currentReportType = reportType;
+            const config = reportConfigs[reportType];
+            
+            if (!config) {{
+                showToast('Report configuration not found', 'danger');
+                return;
+            }}
+            
+            // Update dropdown to show selected value
+            document.getElementById('reportTypeDropdown').value = reportType;
+            
+            let departmentFilterHtml = '';
+            if (userRole === 'admin' || userRole === 'super_admin') {{
+                const deptOptions = departments.map(dept => `<option value="${{dept}}">${{dept}}</option>`).join('');
+                const roleOptions = roles.map(role => `<option value="${{role}}">${{role.replace('_', ' ').toUpperCase()}}</option>`).join('');
+                
+                departmentFilterHtml = `
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Department</label>
+                            <select class="form-select" name="department" id="department">
+                                <option value="">All Departments</option>
+                                ${{deptOptions}}
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Role</label>
+                            <select class="form-select" name="role" id="role">
+                                <option value="">All Roles</option>
+                                ${{roleOptions}}
+                            </select>
+                        </div>
+                    </div>
+                `;
+            }}
+            
+            // Build additional filters HTML
+            let additionalFiltersHtml = '';
+            config.filters.forEach(filter => {{
+                additionalFiltersHtml += getFilterHtml(filter);
+            }});
+            
+            let formHtml = `
+                <div class="alert alert-info mb-4">
+                    <i class="fas fa-info-circle me-2"></i>
+                    Configuring: <strong>${{config.name}}</strong>
+                </div>
+                
+                <h5 class="mb-4">Report Configuration</h5>
+                <form id="reportConfigForm" onsubmit="generateReport(event)">
+                    
+                    <!-- Date Range -->
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Start Date</label>
+                            <input type="date" class="form-control" name="start_date" id="start_date">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">End Date</label>
+                            <input type="date" class="form-control" name="end_date" id="end_date">
+                        </div>
+                    </div>
+                    
+                    <!-- Department and Role Filter -->
+                    ${{departmentFilterHtml}}
+                    
+                    <!-- Additional Filters -->
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <label class="form-label">Additional Filters</label>
+                            <div class="row">
+                                ${{additionalFiltersHtml}}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Group By -->
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <label class="form-label">Group By</label>
+                            <select class="form-select" name="group_by">
+                                <option value="">No Grouping</option>
+            `;
+            
+            // Add group by options
+            config.group_by.forEach(group => {{
+                formHtml += `<option value="${{group}}">${{group.replace('_', ' ').toUpperCase()}}</option>`;
+            }});
+            
+            formHtml += `
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Sort By -->
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <label class="form-label">Sort By</label>
+                            <select class="form-select" name="sort_by">
+            `;
+            
+            // Add sort by options
+            config.sort_by.forEach(sort => {{
+                formHtml += `<option value="${{sort}}">${{sort.replace('_', ' ').toUpperCase()}}</option>`;
+            }});
+            
+            formHtml += `
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Sort Order -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <label class="form-label">Sort Order</label>
+                            <select class="form-select" name="sort_order">
+                                <option value="asc">Ascending</option>
+                                <option value="desc">Descending</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Buttons -->
+                    <div class="d-flex justify-content-between">
+                        <button type="button" class="btn btn-secondary" onclick="resetReportForm()">
+                            <i class="fas fa-redo me-1"></i> Reset
+                        </button>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-play me-1"></i> Generate Report
+                        </button>
+                    </div>
+                </form>
+            `;
+            
+            document.getElementById('reportFormContainer').innerHTML = formHtml;
+            
+            // Set default dates (last 30 days)
+            const endDate = new Date();
+            const startDate = new Date();
+            startDate.setDate(startDate.getDate() - 30);
+            
+            if (document.getElementById('start_date')) {{
+                document.getElementById('start_date').valueAsDate = startDate;
+                document.getElementById('end_date').valueAsDate = endDate;
+            }}
+            
+            // Scroll to form container
+            document.getElementById('reportFormContainer').scrollIntoView({{
+                behavior: 'smooth',
+                block: 'start'
+            }});
+        }}
+        
+        function getFilterHtml(filter) {{
+            switch(filter) {{
+                case 'date_range':
+                case 'department':
+                case 'role':
+                    return '';
+                case 'active_status':
+                    return `
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Active Status</label>
+                            <select class="form-select" name="active_status">
+                                <option value="">All</option>
+                                <option value="active">Active (Last 30 days)</option>
+                                <option value="inactive">Inactive</option>
+                            </select>
+                        </div>
+                    `;
+                case 'form_type':
+                    return `
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Form Type</label>
+                            <select class="form-select" name="form_type">
+                                <option value="">All Types</option>
+                                <option value="public">Public</option>
+                                <option value="open">Open</option>
+                                <option value="confidential">Confidential</option>
+                            </select>
+                        </div>
+                    `;
+                case 'published_status':
+                    return `
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Published Status</label>
+                            <select class="form-select" name="published_status">
+                                <option value="">All</option>
+                                <option value="published">Published</option>
+                                <option value="draft">Draft</option>
+                            </select>
+                        </div>
+                    `;
+                case 'score_range':
+                    return `
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Min Score (%)</label>
+                                <input type="number" class="form-control" name="min_score" min="0" max="100">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Max Score (%)</label>
+                                <input type="number" class="form-control" name="max_score" min="0" max="100" value="100">
+                            </div>
+                        </div>
+                    `;
+                case 'completion_status':
+                    return `
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Completion Status</label>
+                            <select class="form-select" name="completion_status">
+                                <option value="">All</option>
+                                <option value="completed">Completed</option>
+                                <option value="pending">Pending</option>
+                            </select>
+                        </div>
+                    `;
+                case 'overdue':
+                    return `
+                        <div class="col-md-6 mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="overdue_only" id="overdue_only">
+                                <label class="form-check-label" for="overdue_only">
+                                    Show Overdue Only
+                                </label>
+                            </div>
+                        </div>
+                    `;
+                case 'access_status':
+                    return `
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Access Status</label>
+                            <select class="form-select" name="access_status">
+                                <option value="">All</option>
+                                <option value="granted">Granted</option>
+                                <option value="pending">Pending</option>
+                                <option value="denied">Denied</option>
+                            </select>
+                        </div>
+                    `;
+                case 'performance_range':
+                    return `
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Min Performance (%)</label>
+                                <input type="number" class="form-control" name="min_performance" min="0" max="100">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Max Performance (%)</label>
+                                <input type="number" class="form-control" name="max_performance" min="0" max="100" value="100">
+                            </div>
+                        </div>
+                    `;
+                default:
+                    return '';
+            }}
+        }}
+        
+        function generateReport(event) {{
+            if (event) event.preventDefault();
+            
+            if (!currentReportType) {{
+                showToast('Please select a report type first', 'warning');
+                return;
+            }}
+            
+            const formElement = document.getElementById('reportConfigForm');
+            if (!formElement) {{
+                showToast('Report form not found', 'danger');
+                return;
+            }}
+            
+            const formData = new FormData(formElement);
+            const params = new URLSearchParams();
+            
+            for (const [key, value] of formData.entries()) {{
+                if (value) params.append(key, value);
+            }}
+            
+            // Show loading
+            const previewContent = document.getElementById('reportPreviewContent');
+            previewContent.innerHTML = `
+                <div class="text-center py-5">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <h5 class="mt-3">Generating Report...</h5>
+                    <p class="text-muted">Please wait while we generate your report</p>
+                </div>
+            `;
+            
+            const modal = new bootstrap.Modal(document.getElementById('reportPreviewModal'));
+            modal.show();
+            
+            // Fetch report data
+            fetch(`/api/reports/${{currentReportType}}?${{params.toString()}}`)
+                .then(response => {{
+                    const contentType = response.headers.get('content-type');
+                    if (!contentType || !contentType.includes('application/json')) {{
+                        return response.text().then(text => {{
+                            throw new Error('Invalid response format: ' + text.substring(0, 200));
+                        }});
+                    }}
+                    return response.json();
+                }})
+                .then(data => {{
+                    if (data.success) {{
+                        currentReportData = data;
+                        displayReportPreview(data);
+                    }} else {{
+                        previewContent.innerHTML = `
+                            <div class="alert alert-danger">
+                                <h5>Error Generating Report</h5>
+                                <p>${{data.error || 'Unknown error occurred'}}</p>
+                            </div>
+                        `;
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    previewContent.innerHTML = `
+                        <div class="alert alert-danger">
+                            <h5>Error Generating Report</h5>
+                            <p>${{error.message}}</p>
+                        </div>
+                    `;
+                }});
+        }}
+        
+        function displayReportPreview(data) {{
+            let html = `
+                <div class="report-header mb-4">
+                    <h4>${{data.report_name || 'Report Preview'}}</h4>
+                    <p class="text-muted">Generated on: ${{new Date().toLocaleString()}}</p>
+            `;
+            
+            if (data.total_records !== undefined) {{
+                html += `
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-2"></i>
+                        Found ${{data.total_records}} records matching your criteria
+                    </div>
+                `;
+            }}
+            
+            html += `</div>`;
+            
+            if (data.summary) {{
+                const summaryItems = Object.entries(data.summary).map(([key, value]) => `
+                    <div class="col-md-3 mb-3">
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <h6>${{key.replace('_', ' ').toUpperCase()}}</h6>
+                                <h4>${{value}}</h4>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+                
+                html += `
+                    <div class="card mb-4">
+                        <div class="card-header bg-light">
+                            <h5 class="mb-0">Summary</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                ${{summaryItems}}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }}
+            
+            if (data.data && data.data.length > 0) {{
+                const headers = Object.keys(data.data[0]).map(key => 
+                    `<th>${{key.replace('_', ' ').toUpperCase()}}</th>`
+                ).join('');
+                
+                const rows = data.data.map(row => {{
+                    const cells = Object.values(row).map(value => 
+                        `<td>${{value || '-'}}</td>`
+                    ).join('');
+                    return `<tr>${{cells}}</tr>`;
+                }}).join('');
+                
+                html += `
+                    <div class="card">
+                        <div class="card-header bg-light">
+                            <h5 class="mb-0">Detailed Data</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead>
+                                        <tr>${{headers}}</tr>
+                                    </thead>
+                                    <tbody>${{rows}}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }} else {{
+                html += `
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        No data found matching your criteria
+                    </div>
+                `;
+            }}
+            
+            document.getElementById('reportPreviewContent').innerHTML = html;
+        }}
+        
+        function downloadReport(format) {{
+            if (!currentReportData) {{
+                showToast('No report data available to download', 'warning');
+                return;
+            }}
+            
+            const formElement = document.getElementById('reportConfigForm');
+            if (!formElement) {{
+                showToast('Report configuration not found', 'danger');
+                return;
+            }}
+            
+            const formData = new FormData(formElement);
+            const params = new URLSearchParams();
+            
+            for (const [key, value] of formData.entries()) {{
+                if (value) params.append(key, value);
+            }}
+            
+            window.open(`/api/reports/${{currentReportType}}/download/${{format}}?${{params.toString()}}`, '_blank');
+        }}
+        
+        function resetReportForm() {{
+            const formElement = document.getElementById('reportConfigForm');
+            if (formElement) {{
+                formElement.reset();
+                
+                // Reset dates to default
+                const endDate = new Date();
+                const startDate = new Date();
+                startDate.setDate(startDate.getDate() - 30);
+                
+                const startDateInput = document.getElementById('start_date');
+                const endDateInput = document.getElementById('end_date');
+                
+                if (startDateInput) startDateInput.valueAsDate = startDate;
+                if (endDateInput) endDateInput.valueAsDate = endDate;
+            }}
+        }}
+        
+        function generateQuickReport(type) {{
+            let params = new URLSearchParams();
+            
+            switch(type) {{
+                case 'today_responses':
+                    params.set('start_date', new Date().toISOString().split('T')[0]);
+                    params.set('end_date', new Date().toISOString().split('T')[0]);
+                    currentReportType = 'response_report';
+                    break;
+                case 'pending_requests':
+                    params.set('access_status', 'pending');
+                    currentReportType = 'download_report';
+                    break;
+                case 'student_performance':
+                    params.set('role', 'student');
+                    currentReportType = 'performance_report';
+                    break;
+                case 'form_usage':
+                    currentReportType = 'form_report';
+                    break;
+                default:
+                    showToast('Invalid quick report type', 'warning');
+                    return;
+            }}
+            
+            // Update dropdown to show selected report type
+            document.getElementById('reportTypeDropdown').value = currentReportType;
+            loadReportForm(currentReportType);
+            
+            // Fill form with quick report params
+            setTimeout(() => {{
+                for (const [key, value] of params.entries()) {{
+                    const element = document.querySelector(`[name="${{key}}"]`);
+                    if (element) element.value = value;
+                }}
+            }}, 100);
+        }}
+        
+        function loadTemplate(templateType) {{
+            const validTypes = ['user', 'form', 'response', 'assignment', 'performance', 'download'];
+            if (!validTypes.includes(templateType)) {{
+                showToast('Invalid template type', 'warning');
+                return;
+            }}
+            
+            const reportType = templateType + '_report';
+            document.getElementById('reportTypeDropdown').value = reportType;
+            loadReportForm(reportType);
+            showToast('Template loaded successfully', 'success');
+        }}
+        
+        // Initialize with first report type
+        document.addEventListener('DOMContentLoaded', function() {{
+            // Optionally auto-select first report type
+            // document.getElementById('reportTypeDropdown').value = 'user_report';
+            // loadReportForm('user_report');
+        }});
+        </script>
+        
+        <style>
+        .report-type-card {{
+            transition: all 0.3s;
+            border: 2px solid transparent;
+        }}
+        
+        .report-type-card:hover {{
+            transform: translateY(-5px);
+            border-color: #0d6efd;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }}
+        
+        .report-icon {{
+            color: #0d6efd;
+        }}
+        
+        .table-responsive {{
+            max-height: 400px;
+            overflow-y: auto;
+        }}
+        
+        .modal-xl {{
+            max-width: 1200px;
+        }}
+        
+        .card.text-white .card-body {{
+            padding: 1.5rem;
+        }}
+        
+        .card.text-white h2 {{
+            font-weight: bold;
+        }}
+        
+        .form-select-lg {{
+            font-size: 1.1rem;
+            padding: 0.75rem 1rem;
+        }}
+        
+        #reportFormContainer {{
+            transition: all 0.3s ease;
+        }}
+        </style>
+        '''
+        
+        # Create the main content
+        content = f'''
+        <div class="container-fluid">
+            <!-- Header -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h2 class="mb-1">
+                                <i class="fas fa-chart-line me-2"></i>Reports & Analytics
+                            </h2>
+                            <p class="text-muted mb-0">
+                                Generate detailed reports and analytics for better insights
+                            </p>
+                        </div>
+                        <div>
+                            <a href="/dashboard" class="btn btn-outline-secondary">
+                                <i class="fas fa-arrow-left me-1"></i> Back to Dashboard
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            
+            
+            <div class="row">
+                <!-- Main Content -->
+                <div class="col-md-8">
+                    <!-- Report Type Selection -->
+                    <div class="card mb-4">
+                        <div class="card-header bg-primary text-white">
+                            <h5 class="mb-0">
+                                <i class="fas fa-chart-bar me-2"></i>Select Report Type
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-8">
+                                    <label class="form-label fw-bold">Choose a Report Type:</label>
+                                    <select class="form-select form-select-lg mb-3" id="reportTypeDropdown" onchange="loadReportForm(this.value)">
+                                        <option value="">-- Select Report Type --</option>
+                                        {report_types_html}
+                                    </select>
+                                    <div class="form-text">
+                                        Select a report type from the dropdown above to start configuring your report
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label fw-bold">&nbsp;</label>
+                                    <div class="d-grid">
+                                        <button class="btn btn-primary btn-lg" onclick="loadSelectedReport()">
+                                            <i class="fas fa-play-circle me-2"></i> Generate Report
+                                        </button>
+                                    </div>
+                                    <div class="form-text text-center mt-2">
+                                        Or click "Generate Report" to continue
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Report Form Area -->
+                    <div class="card mt-4">
+                        <div class="card-header bg-secondary text-white">
+                            <h5 class="mb-0">
+                                <i class="fas fa-cogs me-2"></i>Report Configuration
+                            </h5>
+                        </div>
+                        <div class="card-body" id="reportFormContainer">
+                            <div class="text-center py-5">
+                                <i class="fas fa-mouse-pointer fa-3x text-muted mb-3"></i>
+                                <h5>Select a report type to configure</h5>
+                                <p class="text-muted">Choose a report type from the dropdown above to start configuring your report</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Sidebar - Recent & Quick Actions -->
+                <div class="col-md-4">
+                    <!-- Recent Templates -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0">
+                                <i class="fas fa-history me-2"></i>Recent Templates
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            {recent_templates_html}
+                        </div>
+                    </div>
+                    
+                    <!-- Quick Reports -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">
+                                <i class="fas fa-bolt me-2"></i>Quick Reports
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="d-grid gap-2">
+                                <button class="btn btn-outline-success" onclick="generateQuickReport('today_responses')">
+                                    <i class="fas fa-calendar-day me-2"></i>Today's Responses
+                                </button>
+                                <button class="btn btn-outline-info" onclick="generateQuickReport('pending_requests')">
+                                    <i class="fas fa-clock me-2"></i>Pending Requests
+                                </button>
+                                <button class="btn btn-outline-warning" onclick="generateQuickReport('student_performance')">
+                                    <i class="fas fa-user-graduate me-2"></i>Student Performance
+                                </button>
+                                <button class="btn btn-outline-primary" onclick="generateQuickReport('form_usage')">
+                                    <i class="fas fa-chart-pie me-2"></i>Form Usage
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Export Formats -->
+                    <div class="card mt-4">
+                        <div class="card-header">
+                            <h5 class="mb-0">
+                                <i class="fas fa-download me-2"></i>Export Formats
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row text-center">
+                                <div class="col-4">
+                                    <i class="fas fa-file-excel fa-2x text-success mb-2"></i>
+                                    <p class="small mb-0">Excel</p>
+                                </div>
+                                <div class="col-4">
+                                    <i class="fas fa-file-pdf fa-2x text-danger mb-2"></i>
+                                    <p class="small mb-0">PDF</p>
+                                </div>
+                                <div class="col-4">
+                                    <i class="fas fa-file-csv fa-2x text-primary mb-2"></i>
+                                    <p class="small mb-0">CSV</p>
+                                </div>
+                            </div>
+                            <p class="small text-muted text-center mt-2">
+                                All report formats available after generation
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Report Preview Modal -->
+        <div class="modal fade" id="reportPreviewModal" tabindex="-1" aria-labelledby="reportPreviewModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-content">
+                    <div class="modal-header bg-primary text-white">
+                        <h5 class="modal-title" id="reportPreviewModalLabel">Report Preview</h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body" id="reportPreviewContent">
+                        <!-- Report preview will be loaded here -->
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="button" class="btn btn-success" onclick="downloadReport('excel')">
+                            <i class="fas fa-file-excel me-1"></i> Excel
+                        </button>
+                        <button type="button" class="btn btn-danger" onclick="downloadReport('pdf')">
+                            <i class="fas fa-file-pdf me-1"></i> PDF
+                        </button>
+                        <button type="button" class="btn btn-primary" onclick="downloadReport('csv')">
+                            <i class="fas fa-file-csv me-1"></i> CSV
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        {js_code}
+        '''
+        
+        return html_wrapper('Reports & Analytics', content, get_navbar(), '')
+        
+    except Exception as e:
+        print(f"Reports dashboard error: {e}")
+        traceback.print_exc()
+        return html_wrapper('Error', f'''
+        <div class="alert alert-danger">
+            <h4>Error Loading Reports</h4>
+            <p>Error: {str(e)}</p>
+            <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+        </div>
+        ''', get_navbar(), '')
+
+@app.route('/api/reports/<report_type>', methods=['GET'])
+@login_required
+@teacher_required
+def generate_report_api(report_type):
+    """API endpoint to generate reports"""
+    try:
+        user_id = session['user_id']
+        user_role = session['role']
+        
+        # Get filter parameters
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        department = request.args.get('department')
+        role = request.args.get('role')
+        form_type = request.args.get('form_type')
+        published_status = request.args.get('published_status')
+        min_score = request.args.get('min_score')
+        max_score = request.args.get('max_score')
+        completion_status = request.args.get('completion_status')
+        access_status = request.args.get('access_status')
+        group_by = request.args.get('group_by')
+        sort_by = request.args.get('sort_by', 'created_at')
+        sort_order = request.args.get('sort_order', 'desc')
+        overdue_only = request.args.get('overdue_only') == 'on'
+        active_status = request.args.get('active_status')
+        min_performance = request.args.get('min_performance')
+        max_performance = request.args.get('max_performance')
+        
+        connection = get_db()
+        data = []
+        summary = {}
+        
+        # Build base query based on report type
+        if report_type == 'user_report':
+            query = '''
+                SELECT 
+                    u.id,
+                    u.name,
+                    u.email,
+                    u.role,
+                    u.department,
+                    DATE_FORMAT(u.created_at, '%%Y-%%m-%%d %%H:%%i:%%s') as created_at,
+                    (SELECT COUNT(*) FROM forms WHERE created_by = u.id) as forms_created,
+                    (SELECT COUNT(*) FROM responses WHERE student_id = u.id) as responses_submitted,
+                    (SELECT COUNT(*) FROM assignments WHERE student_id = u.id) as assignments_given
+                FROM users u
+                WHERE 1=1
+            '''
+            
+            # Apply filters
+            params = []
+            if department:
+                query += ' AND u.department = %s'
+                params.append(department)
+            elif user_role == 'teacher':
+                cursor = connection.cursor()
+                cursor.execute('SELECT department FROM users WHERE id = %s', (user_id,))
+                user_dept = cursor.fetchone()['department']
+                query += ' AND u.department = %s'
+                params.append(user_dept)
+            
+            if role:
+                query += ' AND u.role = %s'
+                params.append(role)
+            
+            if start_date and end_date:
+                query += ' AND DATE(u.created_at) BETWEEN %s AND %s'
+                params.extend([start_date, end_date])
+            
+            # Active status filter
+            if active_status == 'active':
+                query += ' AND u.last_login_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)'
+            elif active_status == 'inactive':
+                query += ' AND (u.last_login_at IS NULL OR u.last_login_at < DATE_SUB(NOW(), INTERVAL 30 DAY))'
+            
+            # Order by
+            query += f' ORDER BY {sort_by} {sort_order.upper()}'
+            
+            with connection.cursor() as cursor:
+                cursor.execute(query, params)
+                data = cursor.fetchall()
+                
+                # Get summary
+                summary_query = '''
+                    SELECT 
+                        COUNT(*) as total_users,
+                        COUNT(DISTINCT department) as total_departments,
+                        SUM(CASE WHEN role = 'student' THEN 1 ELSE 0 END) as total_students,
+                        SUM(CASE WHEN role = 'teacher' THEN 1 ELSE 0 END) as total_teachers,
+                        SUM(CASE WHEN role IN ('admin', 'super_admin') THEN 1 ELSE 0 END) as total_admins,
+                        AVG((SELECT COUNT(*) FROM responses WHERE student_id = u.id)) as avg_responses_per_user
+                    FROM users u
+                    WHERE 1=1
+                '''
+                summary_params = []
+                if department:
+                    summary_query += ' AND u.department = %s'
+                    summary_params.append(department)
+                elif user_role == 'teacher':
+                    summary_query += ' AND u.department = %s'
+                    summary_params.append(user_dept)
+                
+                cursor.execute(summary_query, summary_params)
+                summary = cursor.fetchone()
+        
+        elif report_type == 'form_report':
+            query = '''
+                SELECT 
+                    f.id,
+                    f.title,
+                    f.form_type,
+                    f.department,
+                    u.name as creator_name,
+                    DATE_FORMAT(f.created_at, '%%Y-%%m-%%d %%H:%%i:%%s') as created_at,
+                    CASE WHEN f.is_published THEN 'Yes' ELSE 'No' END as published,
+                    f.review_status,
+                    (SELECT COUNT(*) FROM responses WHERE form_id = f.id) as response_count,
+                    (SELECT COUNT(*) FROM assignments WHERE form_id = f.id) as assignment_count
+                FROM forms f
+                JOIN users u ON f.created_by = u.id
+                WHERE 1=1
+            '''
+            
+            params = []
+            if user_role == 'teacher':
+                query += ' AND (f.department = (SELECT department FROM users WHERE id = %s) OR f.created_by = %s)'
+                params.extend([user_id, user_id])
+            elif department:
+                query += ' AND f.department = %s'
+                params.append(department)
+            
+            if form_type:
+                query += ' AND f.form_type = %s'
+                params.append(form_type)
+            
+            if published_status:
+                query += ' AND f.is_published = %s'
+                params.append(1 if published_status == 'published' else 0)
+            
+            if start_date and end_date:
+                query += ' AND DATE(f.created_at) BETWEEN %s AND %s'
+                params.extend([start_date, end_date])
+            
+            query += f' ORDER BY {sort_by} {sort_order.upper()}'
+            
+            with connection.cursor() as cursor:
+                cursor.execute(query, params)
+                data = cursor.fetchall()
+                
+                # Get summary
+                summary_query = '''
+                    SELECT 
+                        COUNT(*) as total_forms,
+                        SUM(CASE WHEN is_published = 1 THEN 1 ELSE 0 END) as published_forms,
+                        SUM(CASE WHEN is_student_submission = 1 THEN 1 ELSE 0 END) as student_forms,
+                        COUNT(DISTINCT department) as departments_with_forms,
+                        AVG((SELECT COUNT(*) FROM responses WHERE form_id = f.id)) as avg_responses_per_form,
+                        MAX((SELECT COUNT(*) FROM responses WHERE form_id = f.id)) as max_responses,
+                        MIN((SELECT COUNT(*) FROM responses WHERE form_id = f.id)) as min_responses
+                    FROM forms f
+                    WHERE 1=1
+                '''
+                summary_params = []
+                if user_role == 'teacher':
+                    summary_query += ' AND (f.department = (SELECT department FROM users WHERE id = %s) OR f.created_by = %s)'
+                    summary_params.extend([user_id, user_id])
+                elif department:
+                    summary_query += ' AND f.department = %s'
+                    summary_params.append(department)
+                
+                if form_type:
+                    summary_query += ' AND f.form_type = %s'
+                    summary_params.append(form_type)
+                
+                cursor.execute(summary_query, summary_params)
+                summary = cursor.fetchone()
+        
+        elif report_type == 'response_report':
+            query = '''
+                SELECT 
+                    f.title as form_title,
+                    u.name as student_name,
+                    u.email as student_email,
+                    r.score,
+                    r.percentage,
+                    r.total_marks,
+                    DATE_FORMAT(r.submitted_at, '%%Y-%%m-%%d %%H:%%i:%%s') as submitted_at,
+                    r.time_taken,
+                    f.department,
+                    u2.name as form_creator
+                FROM responses r
+                JOIN forms f ON r.form_id = f.id
+                JOIN users u ON r.student_id = u.id
+                JOIN users u2 ON f.created_by = u2.id
+                WHERE 1=1
+            '''
+            
+            params = []
+            if user_role == 'teacher':
+                query += ' AND (f.department = (SELECT department FROM users WHERE id = %s) OR f.created_by = %s)'
+                params.extend([user_id, user_id])
+            elif department:
+                query += ' AND f.department = %s'
+                params.append(department)
+            
+            if start_date and end_date:
+                query += ' AND DATE(r.submitted_at) BETWEEN %s AND %s'
+                params.extend([start_date, end_date])
+            
+            if min_score:
+                query += ' AND r.percentage >= %s'
+                params.append(float(min_score))
+            
+            if max_score:
+                query += ' AND r.percentage <= %s'
+                params.append(float(max_score))
+            
+            query += f' ORDER BY {sort_by} {sort_order.upper()}'
+            
+            with connection.cursor() as cursor:
+                cursor.execute(query, params)
+                data = cursor.fetchall()
+                
+                # Get summary
+                summary_query = '''
+                    SELECT 
+                        COUNT(*) as total_responses,
+                        AVG(r.percentage) as avg_score,
+                        MIN(r.percentage) as min_score,
+                        MAX(r.percentage) as max_score,
+                        AVG(r.time_taken) as avg_time_taken,
+                        COUNT(DISTINCT r.student_id) as unique_students,
+                        COUNT(DISTINCT r.form_id) as unique_forms,
+                        SUM(CASE WHEN r.percentage >= 70 THEN 1 ELSE 0 END) as passed_responses,
+                        SUM(CASE WHEN r.percentage < 70 THEN 1 ELSE 0 END) as failed_responses
+                    FROM responses r
+                    JOIN forms f ON r.form_id = f.id
+                    WHERE 1=1
+                '''
+                summary_params = []
+                
+                if user_role == 'teacher':
+                    summary_query += ' AND (f.department = (SELECT department FROM users WHERE id = %s) OR f.created_by = %s)'
+                    summary_params.extend([user_id, user_id])
+                elif department:
+                    summary_query += ' AND f.department = %s'
+                    summary_params.append(department)
+                
+                if start_date and end_date:
+                    summary_query += ' AND DATE(r.submitted_at) BETWEEN %s AND %s'
+                    summary_params.extend([start_date, end_date])
+                
+                if min_score:
+                    summary_query += ' AND r.percentage >= %s'
+                    summary_params.append(float(min_score))
+                
+                if max_score:
+                    summary_query += ' AND r.percentage <= %s'
+                    summary_params.append(float(max_score))
+                
+                cursor.execute(summary_query, summary_params)
+                summary = cursor.fetchone()
+        
+        elif report_type == 'assignment_report':
+            query = '''
+                SELECT 
+                    f.title as form_title,
+                    u.name as student_name,
+                    u2.name as assigned_by,
+                    DATE_FORMAT(a.assigned_at, '%%Y-%%m-%%d %%H:%%i:%%s') as assigned_at,
+                    DATE_FORMAT(a.due_date, '%%Y-%%m-%%d %%H:%%i:%%s') as due_date,
+                    CASE WHEN a.is_completed THEN 'Yes' ELSE 'No' END as completed,
+                    CASE WHEN a.due_date < NOW() AND a.is_completed = 0 THEN 'Yes' ELSE 'No' END as overdue,
+                    f.department
+                FROM assignments a
+                JOIN forms f ON a.form_id = f.id
+                JOIN users u ON a.student_id = u.id
+                JOIN users u2 ON a.assigned_by = u2.id
+                WHERE 1=1
+            '''
+            
+            params = []
+            if user_role == 'teacher':
+                query += ' AND (f.department = (SELECT department FROM users WHERE id = %s) OR f.created_by = %s)'
+                params.extend([user_id, user_id])
+            elif department:
+                query += ' AND f.department = %s'
+                params.append(department)
+            
+            if completion_status:
+                query += ' AND a.is_completed = %s'
+                params.append(1 if completion_status == 'completed' else 0)
+            
+            if overdue_only:
+                query += ' AND a.due_date < NOW() AND a.is_completed = 0'
+            
+            if start_date and end_date:
+                query += ' AND DATE(a.assigned_at) BETWEEN %s AND %s'
+                params.extend([start_date, end_date])
+            
+            query += f' ORDER BY {sort_by} {sort_order.upper()}'
+            
+            with connection.cursor() as cursor:
+                cursor.execute(query, params)
+                data = cursor.fetchall()
+                
+                # Get summary
+                summary_query = '''
+                    SELECT 
+                        COUNT(*) as total_assignments,
+                        SUM(CASE WHEN a.is_completed = 1 THEN 1 ELSE 0 END) as completed_assignments,
+                        SUM(CASE WHEN a.due_date < NOW() AND a.is_completed = 0 THEN 1 ELSE 0 END) as overdue_assignments,
+                        AVG(DATEDIFF(a.due_date, a.assigned_at)) as avg_assignment_duration_days,
+                        COUNT(DISTINCT a.student_id) as students_with_assignments,
+                        COUNT(DISTINCT a.form_id) as forms_with_assignments,
+                        COUNT(DISTINCT a.assigned_by) as teachers_assigning
+                    FROM assignments a
+                    JOIN forms f ON a.form_id = f.id
+                    WHERE 1=1
+                '''
+                summary_params = []
+                
+                if user_role == 'teacher':
+                    summary_query += ' AND (f.department = (SELECT department FROM users WHERE id = %s) OR f.created_by = %s)'
+                    summary_params.extend([user_id, user_id])
+                elif department:
+                    summary_query += ' AND f.department = %s'
+                    summary_params.append(department)
+                
+                if completion_status:
+                    summary_query += ' AND a.is_completed = %s'
+                    summary_params.append(1 if completion_status == 'completed' else 0)
+                
+                if start_date and end_date:
+                    summary_query += ' AND DATE(a.assigned_at) BETWEEN %s AND %s'
+                    summary_params.extend([start_date, end_date])
+                
+                cursor.execute(summary_query, summary_params)
+                summary = cursor.fetchone()
+        
+        elif report_type == 'performance_report':
+            # First get user's department if teacher
+            if user_role == 'teacher':
+                cursor = connection.cursor()
+                cursor.execute('SELECT department FROM users WHERE id = %s', (user_id,))
+                user_dept = cursor.fetchone()['department']
+            
+            query = '''
+                SELECT 
+                    u.id as user_id,
+                    u.name as user_name,
+                    u.email,
+                    u.role,
+                    u.department,
+                    COUNT(r.id) as total_responses,
+                    COALESCE(AVG(r.percentage), 0) as avg_score,
+                    COALESCE(MIN(r.percentage), 0) as min_score,
+                    COALESCE(MAX(r.percentage), 0) as max_score,
+                    (SELECT COUNT(DISTINCT form_id) FROM assignments WHERE student_id = u.id) as total_assignments,
+                    (SELECT COUNT(DISTINCT form_id) FROM responses WHERE student_id = u.id) as completed_forms
+                FROM users u
+                LEFT JOIN responses r ON u.id = r.student_id
+                WHERE 1=1
+            '''
+            
+            params = []
+            if user_role == 'teacher':
+                query += ' AND u.department = %s'
+                params.append(user_dept)
+            elif department:
+                query += ' AND u.department = %s'
+                params.append(department)
+            
+            if role:
+                query += ' AND u.role = %s'
+                params.append(role)
+            
+            if start_date and end_date:
+                query += ' AND (r.submitted_at IS NULL OR DATE(r.submitted_at) BETWEEN %s AND %s)'
+                params.extend([start_date, end_date])
+            
+            query += '''
+                GROUP BY u.id, u.name, u.email, u.role, u.department
+                HAVING 1=1
+            '''
+            
+            if min_performance:
+                query += ' AND COALESCE(AVG(r.percentage), 0) >= %s'
+                params.append(float(min_performance))
+            
+            if max_performance:
+                query += ' AND COALESCE(AVG(r.percentage), 0) <= %s'
+                params.append(float(max_performance))
+            
+            query += f' ORDER BY {sort_by} {sort_order.upper()}'
+            
+            with connection.cursor() as cursor:
+                cursor.execute(query, params)
+                data = cursor.fetchall()
+                
+                # Get summary
+                summary_query = '''
+                    SELECT 
+                        COUNT(DISTINCT u.id) as total_users,
+                        COALESCE(AVG(avg_score), 0) as overall_avg_score,
+                        COUNT(CASE WHEN avg_score >= 70 THEN 1 END) as users_above_70,
+                        COUNT(CASE WHEN avg_score < 70 AND avg_score >= 50 THEN 1 END) as users_50_to_70,
+                        COUNT(CASE WHEN avg_score < 50 THEN 1 END) as users_below_50,
+                        COALESCE(MAX(avg_score), 0) as top_performer_score,
+                        COALESCE(MIN(avg_score), 0) as lowest_performer_score
+                    FROM (
+                        SELECT 
+                            u.id,
+                            COALESCE(AVG(r.percentage), 0) as avg_score
+                        FROM users u
+                        LEFT JOIN responses r ON u.id = r.student_id
+                        WHERE 1=1
+                '''
+                summary_params = []
+                
+                if user_role == 'teacher':
+                    summary_query += ' AND u.department = %s'
+                    summary_params.append(user_dept)
+                elif department:
+                    summary_query += ' AND u.department = %s'
+                    summary_params.append(department)
+                
+                if role:
+                    summary_query += ' AND u.role = %s'
+                    summary_params.append(role)
+                
+                if start_date and end_date:
+                    summary_query += ' AND (r.submitted_at IS NULL OR DATE(r.submitted_at) BETWEEN %s AND %s)'
+                    summary_params.extend([start_date, end_date])
+                
+                summary_query += '''
+                        GROUP BY u.id
+                    ) as user_scores
+                '''
+                
+                cursor.execute(summary_query, summary_params)
+                summary = cursor.fetchone()
+        
+        elif report_type == 'download_report':
+            query = '''
+                SELECT 
+                    f.title as form_title,
+                    u.name as student_name,
+                    u.email as student_email,
+                    DATE_FORMAT(rd.created_at, '%%Y-%%m-%%d %%H:%%i:%%s') as requested_at,
+                    CASE WHEN rd.access_granted THEN 'Granted' ELSE 'Pending' END as access_status,
+                    DATE_FORMAT(rd.granted_at, '%%Y-%%m-%%d %%H:%%i:%%s') as granted_at,
+                    u2.name as granted_by,
+                    rd.download_count,
+                    DATE_FORMAT(rd.last_downloaded_at, '%%Y-%%m-%%d %%H:%%i:%%s') as last_downloaded_at,
+                    r.percentage as response_score,
+                    f.department
+                FROM response_downloads rd
+                JOIN responses r ON rd.response_id = r.id
+                JOIN forms f ON rd.form_id = f.id
+                JOIN users u ON rd.student_id = u.id
+                LEFT JOIN users u2 ON rd.granted_by = u2.id
+                WHERE 1=1
+            '''
+            
+            params = []
+            if user_role == 'teacher':
+                query += ' AND f.created_by = %s'
+                params.append(user_id)
+            elif department:
+                query += ' AND f.department = %s'
+                params.append(department)
+            
+            if access_status:
+                if access_status == 'granted':
+                    query += ' AND rd.access_granted = 1'
+                elif access_status == 'pending':
+                    query += ' AND rd.access_granted = 0'
+                elif access_status == 'denied':
+                    query += ' AND rd.access_granted = 0 AND rd.granted_at IS NOT NULL'
+            
+            if start_date and end_date:
+                query += ' AND DATE(rd.created_at) BETWEEN %s AND %s'
+                params.extend([start_date, end_date])
+            
+            query += f' ORDER BY {sort_by} {sort_order.upper()}'
+            
+            with connection.cursor() as cursor:
+                cursor.execute(query, params)
+                data = cursor.fetchall()
+                
+                # Get summary
+                summary_query = '''
+                    SELECT 
+                        COUNT(*) as total_requests,
+                        SUM(CASE WHEN rd.access_granted = 1 THEN 1 ELSE 0 END) as granted_requests,
+                        SUM(CASE WHEN rd.access_granted = 0 THEN 1 ELSE 0 END) as pending_requests,
+                        AVG(rd.download_count) as avg_downloads_per_grant,
+                        SUM(rd.download_count) as total_downloads,
+                        COUNT(DISTINCT rd.student_id) as unique_requesters,
+                        COUNT(DISTINCT rd.form_id) as forms_with_requests,
+                        COUNT(DISTINCT f.department) as departments_with_requests
+                    FROM response_downloads rd
+                    JOIN forms f ON rd.form_id = f.id
+                    WHERE 1=1
+                '''
+                summary_params = []
+                
+                if user_role == 'teacher':
+                    summary_query += ' AND f.created_by = %s'
+                    summary_params.append(user_id)
+                elif department:
+                    summary_query += ' AND f.department = %s'
+                    summary_params.append(department)
+                
+                if access_status:
+                    if access_status == 'granted':
+                        summary_query += ' AND rd.access_granted = 1'
+                    elif access_status == 'pending':
+                        summary_query += ' AND rd.access_granted = 0'
+                    elif access_status == 'denied':
+                        summary_query += ' AND rd.access_granted = 0 AND rd.granted_at IS NOT NULL'
+                
+                if start_date and end_date:
+                    summary_query += ' AND DATE(rd.created_at) BETWEEN %s AND %s'
+                    summary_params.extend([start_date, end_date])
+                
+                cursor.execute(summary_query, summary_params)
+                summary = cursor.fetchone()
+        
+        else:
+            connection.close()
+            return jsonify({'success': False, 'error': 'Invalid report type'}), 400
+        
+        connection.close()
+        
+        # Format data for JSON response
+        formatted_data = []
+        for row in data:
+            formatted_row = {}
+            for key, value in row.items():
+                if isinstance(value, Decimal):
+                    formatted_row[key] = float(value)
+                elif isinstance(value, datetime):
+                    formatted_row[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(value, timedelta):
+                    formatted_row[key] = str(value)
+                elif value is None:
+                    formatted_row[key] = ''
+                else:
+                    formatted_row[key] = value
+            formatted_data.append(formatted_row)
+        
+        # Format summary
+        formatted_summary = {}
+        if summary:
+            for key, value in summary.items():
+                if isinstance(value, Decimal):
+                    formatted_summary[key] = float(value)
+                elif isinstance(value, datetime):
+                    formatted_summary[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(value, timedelta):
+                    formatted_summary[key] = str(value)
+                elif value is None:
+                    formatted_summary[key] = 0
+                else:
+                    formatted_summary[key] = value
+        
+        return jsonify({
+            'success': True,
+            'report_name': report_type.replace('_', ' ').title() + ' Report',
+            'total_records': len(formatted_data),
+            'data': formatted_data,
+            'summary': formatted_summary,
+            'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+        
+    except Exception as e:
+        print(f"Report generation error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+@app.route('/api/reports/<report_type>/download/<format>', methods=['GET'])
+@login_required
+@teacher_required
+def download_report(report_type, format):
+    """Download report in specified format"""
+    try:
+        # Generate report data first
+        report_response = generate_report_api(report_type)
+        
+        if report_response.status_code != 200:
+            return report_response
+        
+        report_data = report_response.get_json()
+        
+        if not report_data['success']:
+            return jsonify({'success': False, 'error': report_data.get('error', 'Failed to generate report')}), 400
+        
+        if format == 'csv':
+            return download_csv(report_data)
+        elif format == 'excel':
+            return download_excel(report_data)
+        elif format == 'pdf':
+            return download_pdf(report_data)
+        else:
+            return jsonify({'success': False, 'error': 'Unsupported format'}), 400
+            
+    except Exception as e:
+        print(f"Report download error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def download_csv(report_data):
+    """Generate CSV download"""
+    try:
+        import csv
+        from io import StringIO
+        from datetime import datetime
+        
+        # Create CSV content
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        if report_data['data'] and len(report_data['data']) > 0:
+            writer.writerow(report_data['data'][0].keys())
+            
+            # Write data rows
+            for row in report_data['data']:
+                writer.writerow([str(value) if value is not None else '' for value in row.values()])
+        
+        # Create response
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        response.headers['Content-Disposition'] = f'attachment; filename="{report_data["report_name"].replace(" ", "_")}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv"'
+        
+        return response
+        
+    except Exception as e:
+        print(f"CSV generation error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def download_excel(report_data):
+    """Generate Excel download"""
+    try:
+        import pandas as pd
+        from io import BytesIO
+        from datetime import datetime
+        
+        # Check if pandas is available
+        try:
+            import pandas as pd
+            import openpyxl
+        except ImportError:
+            print("Pandas or openpyxl not available, falling back to CSV")
+            return download_csv(report_data)
+        
+        # Create DataFrame from report data
+        if report_data['data'] and len(report_data['data']) > 0:
+            df = pd.DataFrame(report_data['data'])
+        else:
+            df = pd.DataFrame()  # Empty DataFrame
+            
+        # Create Excel file in memory
+        output = BytesIO()
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Write main data
+            df.to_excel(writer, sheet_name='Report Data', index=False)
+            
+            # Write summary if available
+            if report_data.get('summary'):
+                summary_df = pd.DataFrame([report_data['summary']])
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            
+            # Write metadata
+            metadata = pd.DataFrame({
+                'Field': ['Report Name', 'Total Records', 'Generated At'],
+                'Value': [report_data['report_name'], report_data['total_records'], report_data['generated_at']]
+            })
+            metadata.to_excel(writer, sheet_name='Metadata', index=False)
+        
+        output.seek(0)
+        
+        # Create response
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        response.headers['Content-Disposition'] = f'attachment; filename="{report_data["report_name"].replace(" ", "_")}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
+        
+        return response
+        
+    except Exception as e:
+        print(f"Excel generation error: {e}")
+        traceback.print_exc()
+        # Fallback to CSV if Excel generation fails
+        return download_csv(report_data)
+
+
+def download_pdf(report_data):
+    """Generate PDF download"""
+    try:
+        # Try to import reportlab
+        try:
+            from reportlab.lib.pagesizes import letter, landscape
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib import colors
+            from io import BytesIO
+        except ImportError:
+            print("ReportLab not available for PDF generation")
+            return jsonify({'success': False, 'error': 'PDF generation requires ReportLab library'}), 500
+        
+        from datetime import datetime
+        
+        # Create PDF in memory
+        buffer = BytesIO()
+        
+        # Use landscape for better table display
+        doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
+        elements = []
+        
+        styles = getSampleStyleSheet()
+        
+        # Title
+        title = Paragraph(f"<b>{report_data['report_name']}</b>", styles['Title'])
+        elements.append(title)
+        
+        # Metadata
+        metadata = Paragraph(
+            f"Generated on: {report_data['generated_at']}<br/>Total Records: {report_data['total_records']}",
+            styles['Normal']
+        )
+        elements.append(metadata)
+        elements.append(Spacer(1, 12))
+        
+        # Summary if available
+        if report_data.get('summary'):
+            summary_title = Paragraph("<b>Summary</b>", styles['Heading2'])
+            elements.append(summary_title)
+            
+            summary_data = [['Metric', 'Value']]
+            for key, value in report_data['summary'].items():
+                summary_data.append([key.replace('_', ' ').title(), str(value)])
+            
+            summary_table = Table(summary_data, colWidths=[200, 100])
+            summary_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            elements.append(summary_table)
+            elements.append(Spacer(1, 20))
+        
+        # Main data table
+        if report_data['data'] and len(report_data['data']) > 0:
+            data_title = Paragraph("<b>Detailed Data</b>", styles['Heading2'])
+            elements.append(data_title)
+            
+            # Prepare table data
+            table_data = [list(report_data['data'][0].keys())]  # Header
+            
+            # Limit rows for PDF (too many rows can cause memory issues)
+            max_rows = 100  # Limit to 100 rows for PDF
+            data_for_pdf = report_data['data'][:max_rows]
+            
+            for row in data_for_pdf:
+                table_data.append([str(val) if val is not None else '' for val in row.values()])
+            
+            # Check if we limited the rows
+            if len(report_data['data']) > max_rows:
+                elements.append(Paragraph(f"<i>Showing first {max_rows} of {len(report_data['data'])} records</i>", styles['Italic']))
+            
+            # Create table with column widths
+            col_widths = [80] * len(table_data[0])  # Equal column widths
+            
+            data_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+            data_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('WORDWRAP', (0, 0), (-1, -1), True),
+            ]))
+            elements.append(data_table)
+        
+        # Build PDF
+        doc.build(elements)
+        
+        buffer.seek(0)
+        
+        # Create response
+        response = make_response(buffer.getvalue())
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = f'attachment; filename="{report_data["report_name"].replace(" ", "_")}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf"'
+        
+        return response
+        
+    except Exception as e:
+        print(f"PDF generation error: {e}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/request-form/<int:form_id>', methods=['POST'])
 @login_required

@@ -76,6 +76,26 @@ email_queue = Queue()
 # Replace the existing get_db() function with this:
 
 # ========== DECORATORS DEFINITION ==========
+
+
+# Password functions - FIXED VERSION
+def hash_password(password):
+    """Hash password consistently using SHA256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def check_password(hashed, password):
+    """Check password consistently using SHA256"""
+    try:
+        return hashed == hashlib.sha256(password.encode()).hexdigest()
+    except Exception as e:
+        print(f"Password check error: {e}")
+        return False
+
+def handle_password(password):
+    """Alias for hash_password for backward compatibility"""
+    return hash_password(password)  # Add this function
+
+# ========== DECORATORS DEFINITION ==========
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -98,34 +118,13 @@ def teacher_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Password functions - FIXED VERSION
-def hash_password(password):
-    """Hash password consistently using SHA256"""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def check_password(hashed, password):
-    """Check password consistently using SHA256"""
-    try:
-        return hashed == hashlib.sha256(password.encode()).hexdigest()
-    except Exception as e:
-        print(f"Password check error: {e}")
-        return False
-
-def handle_password(password):
-    """Alias for hash_password for backward compatibility"""
-    return hash_password(password)  # Add this function
-
 def admin_required(f):
+    """Decorator to require admin role"""
+    from functools import wraps
     @wraps(f)
-    @login_required
     def decorated_function(*args, **kwargs):
         if session.get('role') not in ['admin', 'super_admin']:
-            return '''
-            <script>
-                alert("Admin access required");
-                window.location.href = "/dashboard";
-            </script>
-            '''
+            return jsonify({'success': False, 'error': 'Admin access required'}), 403
         return f(*args, **kwargs)
     return decorated_function
 
@@ -2970,15 +2969,6 @@ import traceback
 from flask import request, jsonify, session
 from werkzeug.security import generate_password_hash
 
-def admin_required(f):
-    """Decorator to require admin role"""
-    from functools import wraps
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if session.get('role') != 'admin':
-            return jsonify({'success': False, 'error': 'Admin access required'}), 403
-        return f(*args, **kwargs)
-    return decorated_function
 
 @app.route('/debug/db-test')
 @admin_required
@@ -17335,331 +17325,385 @@ def get_student_details(student_id):
         return jsonify({'success': False, 'error': str(e)})
     
 
-@app.route('/admin')
-@admin_required
+@app.route('/admin', methods=['GET'])
+@admin_required  # This allows both 'admin' and 'super_admin'
 def admin_panel():
-    """Admin panel for system management"""
+    """Admin panel for managing users and system"""
     try:
+        # Get statistics for admin dashboard
         connection = get_db()
         with connection.cursor() as cursor:
-            # Get system statistics
+            # User statistics
             cursor.execute('''
                 SELECT 
-                    COUNT(DISTINCT id) as total_users,
-                    SUM(CASE WHEN role = 'student' THEN 1 ELSE 0 END) as total_students,
-                    SUM(CASE WHEN role = 'teacher' THEN 1 ELSE 0 END) as total_teachers,
-                    SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) as total_admins,
-                    SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END) as total_super_admins
-                FROM users
+                    role,
+                    COUNT(*) as count,
+                    COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as last_7_days
+                FROM users 
+                GROUP BY role
             ''')
-            user_stats = cursor.fetchone()
+            user_stats = cursor.fetchall()
             
-            cursor.execute('''
-                SELECT 
-                    COUNT(DISTINCT id) as total_forms,
-                    SUM(CASE WHEN is_student_submission = TRUE THEN 1 ELSE 0 END) as student_forms,
-                    SUM(CASE WHEN review_status = 'approved' THEN 1 ELSE 0 END) as approved_forms,
-                    SUM(CASE WHEN review_status = 'pending' THEN 1 ELSE 0 END) as pending_forms,
-                    SUM(CASE WHEN review_status = 'rejected' THEN 1 ELSE 0 END) as rejected_forms,
-                    SUM(CASE WHEN form_type = 'open' THEN 1 ELSE 0 END) as open_forms,
-                    SUM(CASE WHEN form_type = 'confidential' THEN 1 ELSE 0 END) as confidential_forms
-                FROM forms
-            ''')
-            form_stats = cursor.fetchone()
-            
-            cursor.execute('''
-                SELECT 
-                    COUNT(DISTINCT id) as total_responses,
-                    AVG(percentage) as avg_score,
-                    MAX(percentage) as highest_score,
-                    MIN(percentage) as lowest_score,
-                    SUM(CASE WHEN percentage >= 70 THEN 1 ELSE 0 END) as passed_responses,
-                    SUM(CASE WHEN percentage < 70 THEN 1 ELSE 0 END) as failed_responses
-                FROM responses
-            ''')
-            response_stats = cursor.fetchone()
-            
-            cursor.execute('''
-                SELECT 
-                    COUNT(DISTINCT id) as total_assignments,
-                    SUM(CASE WHEN is_completed = TRUE THEN 1 ELSE 0 END) as completed_assignments,
-                    SUM(CASE WHEN is_completed = FALSE THEN 1 ELSE 0 END) as pending_assignments
-                FROM assignments
-            ''')
-            assignment_stats = cursor.fetchone()
-            
-            cursor.execute('''
-                SELECT 
-                    COUNT(DISTINCT id) as total_requests,
-                    SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved_requests,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_requests,
-                    SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_requests
-                FROM form_requests
-            ''')
-            request_stats = cursor.fetchone()
-            
-            # Get department-wise statistics
+            # Form statistics
             cursor.execute('''
                 SELECT 
                     department,
-                    COUNT(DISTINCT id) as user_count,
-                    SUM(CASE WHEN role = 'student' THEN 1 ELSE 0 END) as students,
-                    SUM(CASE WHEN role = 'teacher' THEN 1 ELSE 0 END) as teachers
-                FROM users
-                WHERE role IN ('student', 'teacher')
+                    COUNT(*) as total_forms,
+                    COUNT(CASE WHEN is_published = TRUE THEN 1 END) as published_forms,
+                    COUNT(CASE WHEN is_student_submission = TRUE THEN 1 END) as student_forms,
+                    COUNT(CASE WHEN review_status = 'pending' THEN 1 END) as pending_reviews
+                FROM forms 
                 GROUP BY department
-                ORDER BY department
             ''')
-            dept_stats = cursor.fetchall()
+            form_stats = cursor.fetchall()
             
-            # Get recent activities
+            # Recent activities
             cursor.execute('''
-                (SELECT 
-                    'form_created' as type,
-                    f.title as description,
-                    u.name as user_name,
-                    f.created_at as timestamp,
-                    CONCAT('/form/', f.id, '/edit') as link
-                FROM forms f
-                JOIN users u ON f.created_by = u.id
-                ORDER BY f.created_at DESC
-                LIMIT 5)
+                (SELECT 'user_registered' as type, name as title, email as description, 
+                        created_at as timestamp, '/admin' as link
+                 FROM users 
+                 ORDER BY created_at DESC LIMIT 3)
                 
                 UNION ALL
                 
-                (SELECT 
-                    'response_submitted' as type,
-                    CONCAT('Submitted form: ', f.title) as description,
-                    u.name as user_name,
-                    r.submitted_at as timestamp,
-                    CONCAT('/form/', f.id, '/responses') as link
-                FROM responses r
-                JOIN forms f ON r.form_id = f.id
-                JOIN users u ON r.student_id = u.id
-                ORDER BY r.submitted_at DESC
-                LIMIT 5)
+                (SELECT 'form_created' as type, title, description, 
+                        created_at, CONCAT('/form/', id, '/edit') as link
+                 FROM forms 
+                 ORDER BY created_at DESC LIMIT 3)
                 
                 UNION ALL
                 
-                (SELECT 
-                    'user_registered' as type,
-                    CONCAT('New ', role, ' registered') as description,
-                    name as user_name,
-                    created_at as timestamp,
-                    '#' as link
-                FROM users
-                ORDER BY created_at DESC
-                LIMIT 5)
+                (SELECT 'response_submitted' as type, f.title, 
+                        CONCAT('Score: ', r.percentage, '%'), 
+                        r.submitted_at, CONCAT('/form/', f.id, '/responses') as link
+                 FROM responses r
+                 JOIN forms f ON r.form_id = f.id
+                 ORDER BY r.submitted_at DESC LIMIT 3)
                 
-                ORDER BY timestamp DESC
-                LIMIT 10
+                ORDER BY timestamp DESC LIMIT 5
             ''')
             recent_activities = cursor.fetchall()
             
-            # Get system information
-            cursor.execute('SELECT VERSION() as mysql_version')
-            mysql_version = cursor.fetchone()['mysql_version']
+            # System statistics
+            cursor.execute('''
+                SELECT 
+                    COUNT(DISTINCT u.id) as total_users,
+                    COUNT(DISTINCT f.id) as total_forms,
+                    COUNT(DISTINCT r.id) as total_responses,
+                    COUNT(DISTINCT n.id) as total_notifications
+                FROM users u
+                LEFT JOIN forms f ON 1=1
+                LEFT JOIN responses r ON 1=1
+                LEFT JOIN notifications n ON 1=1
+            ''')
+            system_stats = cursor.fetchone()
             
         connection.close()
         
-        # Format Decimal values
-        def format_decimal(value):
-            return round(float(value), 2) if value else 0
+        # User statistics HTML
+        user_stats_html = ''
+        for stat in user_stats:
+            role_bg = {
+                'student': 'student-stats-card',
+                'teacher': 'bg-warning text-dark',
+                'admin': 'bg-danger',
+                'super_admin': 'badge-super-admin'
+            }.get(stat['role'], 'bg-secondary')
+            
+            user_stats_html += f'''
+            <div class="col-md-3 mb-3">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <span class="badge {role_bg} mb-2">{stat['role'].upper()}</span>
+                        <h3 class="mb-1">{stat['count']}</h3>
+                        <small class="text-muted">+{stat['last_7_days']} this week</small>
+                    </div>
+                </div>
+            </div>
+            '''
         
-        # Department statistics HTML
-        dept_stats_html = ''
-        for dept in dept_stats:
-            dept_stats_html += f'''
-            <tr>
-                <td>{dept['department']}</td>
-                <td>{dept['user_count']}</td>
-                <td>{dept['students']}</td>
-                <td>{dept['teachers']}</td>
-                <td>
-                    <a href="/dashboard?department={dept['department']}" class="btn btn-sm btn-outline-primary">
-                        View Forms
-                    </a>
-                </td>
-            </tr>
+        # Form statistics HTML
+        form_stats_html = ''
+        for stat in form_stats:
+            form_stats_html += f'''
+            <div class="col-md-4 mb-3">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-title">{stat['department']}</h6>
+                        <div class="row text-center">
+                            <div class="col-4">
+                                <small class="text-muted">Total</small>
+                                <h5>{stat['total_forms']}</h5>
+                            </div>
+                            <div class="col-4">
+                                <small class="text-muted">Published</small>
+                                <h5>{stat['published_forms']}</h5>
+                            </div>
+                            <div class="col-4">
+                                <small class="text-muted">Pending</small>
+                                <h5>{stat['pending_reviews']}</h5>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
             '''
         
         # Recent activities HTML
         recent_activities_html = ''
-        for activity in recent_activities:
-            icon = {
-                'form_created': 'fa-file-alt text-primary',
-                'response_submitted': 'fa-paper-plane text-success',
-                'user_registered': 'fa-user-plus text-info'
-            }.get(activity['type'], 'fa-info-circle')
-            
-            time_ago = get_time_ago(activity['timestamp'])
-            link = 'javascript:void(0)' if activity['link'] == '#' else activity['link']
-            
-            recent_activities_html += f'''
-            <div class="d-flex mb-3">
-                <div class="flex-shrink-0">
-                    <i class="fas {icon} fa-2x"></i>
+        if recent_activities:
+            for activity in recent_activities:
+                icon_map = {
+                    'user_registered': 'fa-user-plus text-success',
+                    'form_created': 'fa-file-alt text-primary',
+                    'response_submitted': 'fa-paper-plane text-info'
+                }
+                icon = icon_map.get(activity['type'], 'fa-info-circle')
+                time_ago = get_time_ago(activity['timestamp'])
+                
+                recent_activities_html += f'''
+                <div class="list-group-item">
+                    <div class="d-flex w-100 justify-content-between">
+                        <div>
+                            <i class="fas {icon} me-2"></i>
+                            <strong>{activity['title']}</strong>
+                        </div>
+                        <small>{time_ago}</small>
+                    </div>
+                    <p class="mb-1">{activity['description']}</p>
                 </div>
-                <div class="flex-grow-1 ms-3">
-                    <h6 class="mb-1">{activity['description']}</h6>
-                    <p class="mb-0 text-muted">By {activity['user_name']}</p>
-                    <small class="text-muted">{time_ago}</small>
-                    {f'<a href="{link}" class="btn btn-sm btn-outline-primary mt-1">View</a>' if activity['link'] != '#' else ''}
+                '''
+        else:
+            recent_activities_html = '''
+            <div class="text-center py-3">
+                <i class="fas fa-history fa-2x text-muted mb-2"></i>
+                <p class="text-muted">No recent activities</p>
+            </div>
+            '''
+        
+        # Quick actions
+        quick_actions = ''
+        if session['role'] == 'super_admin':
+            quick_actions = f'''
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <a href="/admin/manage-user" class="btn btn-danger w-100">
+                        <i class="fas fa-user-plus me-2"></i>Create User
+                    </a>
+                </div>
+                <div class="col-md-3">
+                    <a href="/admin/test" class="btn btn-warning w-100">
+                        <i class="fas fa-vial me-2"></i>System Test
+                    </a>
+                </div>
+                <div class="col-md-3">
+                    <button onclick="fixPasswords()" class="btn btn-info w-100">
+                        <i class="fas fa-key me-2"></i>Fix Passwords
+                    </button>
+                </div>
+                <div class="col-md-3">
+                    <a href="/debug/db-test" class="btn btn-secondary w-100">
+                        <i class="fas fa-database me-2"></i>DB Test
+                    </a>
+                </div>
+            </div>
+            '''
+        else:
+            quick_actions = f'''
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <a href="/admin/manage-user" class="btn btn-danger w-100">
+                        <i class="fas fa-user-plus me-2"></i>Create User
+                    </a>
+                </div>
+                <div class="col-md-4">
+                    <a href="/admin/test" class="btn btn-warning w-100">
+                        <i class="fas fa-vial me-2"></i>System Test
+                    </a>
+                </div>
+                <div class="col-md-4">
+                    <a href="/debug/db-test" class="btn btn-secondary w-100">
+                        <i class="fas fa-database me-2"></i>DB Test
+                    </a>
                 </div>
             </div>
             '''
         
         content = f'''
         <div class="mb-4">
-            <h2 class="text-white">Admin Panel</h2>
-            <p class="text-white-50">System Administration and Monitoring</p>
+            <h2 class="text-white">
+                <i class="fas fa-cogs me-2"></i>Admin Panel
+            </h2>
+            <p class="text-white-50">System administration and management</p>
         </div>
         
+        {quick_actions}
+        
+        <!-- System Statistics -->
         <div class="row mb-4">
             <div class="col-md-3">
-                <div class="stat-card" style="background: linear-gradient(45deg, #667eea, #764ba2);">
-                    <h5>Total Users</h5>
-                    <h2>{user_stats['total_users'] or 0}</h2>
-                    <small>Students: {user_stats['total_students'] or 0}</small><br>
-                    <small>Teachers: {user_stats['total_teachers'] or 0}</small><br>
-                    <small>Admins: {user_stats['total_admins'] or 0}</small>
+                <div class="card text-white bg-primary">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Total Users</h5>
+                        <h2>{system_stats.get('total_users', 0) or 0}</h2>
+                    </div>
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="stat-card" style="background: linear-gradient(45deg, #10b981, #059669);">
-                    <h5>Total Forms</h5>
-                    <h2>{form_stats['total_forms'] or 0}</h2>
-                    <small>Student Forms: {form_stats['student_forms'] or 0}</small><br>
-                    <small>Open: {form_stats['open_forms'] or 0}</small><br>
-                    <small>Confidential: {form_stats['confidential_forms'] or 0}</small>
+                <div class="card text-white bg-success">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Total Forms</h5>
+                        <h2>{system_stats.get('total_forms', 0) or 0}</h2>
+                    </div>
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="stat-card" style="background: linear-gradient(45deg, #3b82f6, #1d4ed8);">
-                    <h5>Total Responses</h5>
-                    <h2>{response_stats['total_responses'] or 0}</h2>
-                    <small>Avg Score: {format_decimal(response_stats['avg_score'])}%</small><br>
-                    <small>Passed: {response_stats['passed_responses'] or 0}</small><br>
-                    <small>Failed: {response_stats['failed_responses'] or 0}</small>
+                <div class="card text-white bg-warning">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Total Responses</h5>
+                        <h2>{system_stats.get('total_responses', 0) or 0}</h2>
+                    </div>
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="stat-card" style="background: linear-gradient(45deg, #8b5cf6, #7c3aed);">
-                    <h5>System Status</h5>
-                    <h2><i class="fas fa-check-circle"></i> Active</h2>
-                    <small>MySQL: {mysql_version}</small><br>
-                    <small>Emails: {'Enabled' if ENABLE_EMAIL_NOTIFICATIONS else 'Disabled'}</small><br>
-                    <small>Forms Pending: {form_stats['pending_forms'] or 0}</small>
+                <div class="card text-white bg-info">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Notifications</h5>
+                        <h2>{system_stats.get('total_notifications', 0) or 0}</h2>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- User Statistics -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-users me-2"></i>User Statistics</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    {user_stats_html}
+                </div>
+            </div>
+        </div>
+        
+        <!-- Form Statistics by Department -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-file-alt me-2"></i>Form Statistics by Department</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    {form_stats_html}
                 </div>
             </div>
         </div>
         
         <div class="row">
+            <!-- Recent Activities -->
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-header">
-                        <h5 class="mb-0">Department Statistics</h5>
+                        <h5 class="mb-0"><i class="fas fa-history me-2"></i>Recent Activities</h5>
                     </div>
                     <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Department</th>
-                                        <th>Total Users</th>
-                                        <th>Students</th>
-                                        <th>Teachers</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {dept_stats_html}
-                                </tbody>
-                            </table>
+                        <div class="list-group list-group-flush">
+                            {recent_activities_html}
                         </div>
                     </div>
                 </div>
             </div>
             
+            <!-- System Information -->
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-header">
-                        <h5 class="mb-0">Recent Activities</h5>
+                        <h5 class="mb-0"><i class="fas fa-info-circle me-2"></i>System Information</h5>
                     </div>
                     <div class="card-body">
-                        {recent_activities_html}
+                        <ul class="list-group list-group-flush">
+                            <li class="list-group-item d-flex justify-content-between">
+                                <span>Database</span>
+                                <span class="badge bg-success">Connected</span>
+                            </li>
+                            <li class="list-group-item d-flex justify-content-between">
+                                <span>Email Service</span>
+                                <span class="badge {'bg-success' if ENABLE_EMAIL_NOTIFICATIONS else 'bg-warning'}">
+                                    {'Enabled' if ENABLE_EMAIL_NOTIFICATIONS else 'Disabled'}
+                                </span>
+                            </li>
+                            <li class="list-group-item d-flex justify-content-between">
+                                <span>OTP System</span>
+                                <span class="badge bg-success">Active</span>
+                            </li>
+                            <li class="list-group-item d-flex justify-content-between">
+                                <span>Current Time</span>
+                                <span>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span>
+                            </li>
+                            <li class="list-group-item d-flex justify-content-between">
+                                <span>Server Uptime</span>
+                                <span id="uptime">Calculating...</span>
+                            </li>
+                        </ul>
                     </div>
                 </div>
             </div>
         </div>
         
-        <div class="row mt-4">
-            <div class="col-md-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0">Quick Actions</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row">
-                            <div class="col-md-3 mb-3">
-                                <a href="/admin/test" class="btn btn-outline-primary w-100">
-                                    <i class="fas fa-vial me-2"></i>System Test
-                                </a>
-                            </div>
-                            <div class="col-md-3 mb-3">
-                                <a href="/review-forms" class="btn btn-outline-warning w-100">
-                                    <i class="fas fa-check-circle me-2"></i>Review Forms
-                                    {f'<span class="badge bg-danger ms-2">{form_stats["pending_forms"] or 0}</span>' if form_stats['pending_forms'] else ''}
-                                </a>
-                            </div>
-                            <div class="col-md-3 mb-3">
-                                <a href="/form-requests" class="btn btn-outline-info w-100">
-                                    <i class="fas fa-clock me-2"></i>Pending Requests
-                                    {f'<span class="badge bg-danger ms-2">{request_stats["pending_requests"] or 0}</span>' if request_stats['pending_requests'] else ''}
-                                </a>
-                            </div>
-                            <div class="col-md-3 mb-3">
-                                <button onclick="exportSystemData()" class="btn btn-outline-success w-100">
-                                    <i class="fas fa-download me-2"></i>Export Data
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        '''
-        
-        scripts = '''
         <script>
-            function exportSystemData() {
-                if (confirm('Export all system data as CSV?')) {
-                    fetch('/admin/export-data')
-                        .then(res => res.json())
-                        .then(data => {
-                            if (data.success) {
-                                alert('Data exported successfully!');
-                                // Trigger download
-                                const link = document.createElement('a');
-                                link.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(data.csv);
-                                link.download = 'system_data_export.csv';
-                                link.click();
-                            } else {
-                                alert('Error: ' + data.error);
-                            }
-                        });
-                }
-            }
+        // Calculate uptime
+        function updateUptime() {{
+            const startTime = new Date();
+            setInterval(() => {{
+                const now = new Date();
+                const diff = now - startTime;
+                const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+                
+                let uptime = '';
+                if (days > 0) uptime += days + 'd ';
+                if (hours > 0) uptime += hours + 'h ';
+                if (minutes > 0) uptime += minutes + 'm ';
+                uptime += seconds + 's';
+                
+                document.getElementById('uptime').textContent = uptime;
+            }}, 1000);
+        }}
+        
+        function fixPasswords() {{
+            if (confirm('This will reset passwords for users with incompatible password hashes. Continue?')) {{
+                fetch('/admin/fix-passwords')
+                    .then(res => res.json())
+                    .then(data => {{
+                        if (data.success) {{
+                            alert(data.message);
+                        }} else {{
+                            alert('Error: ' + data.error);
+                        }}
+                    }});
+            }}
+        }}
+        
+        // Initialize uptime counter
+        updateUptime();
         </script>
         '''
         
-        return html_wrapper('Admin Panel', content, get_navbar(), scripts)
+        return html_wrapper('Admin Panel', content, get_navbar(), '')
         
     except Exception as e:
         print(f"Admin panel error: {e}")
         traceback.print_exc()
-        return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
-
+        return html_wrapper('Error', f'''
+        <div class="alert alert-danger">
+            <h4>Error Loading Admin Panel</h4>
+            <p>Error: {str(e)}</p>
+            <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+        </div>
+        ''', get_navbar(), '')
+    
 @app.route('/admin/test')
 @admin_required
 def admin_test():

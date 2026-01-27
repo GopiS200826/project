@@ -1046,7 +1046,6 @@ OTP_EXPIRY_MINUTES = 10
 OTP_LENGTH = 6
 
 
-
 # ... rest of the code continues ...
 
 # Notification functions
@@ -11699,7 +11698,18 @@ def reports_dashboard():
                             <label class="form-label">Department</label>
                             <select class="form-select" name="department" id="department">
                                 <option value="">All Departments</option>
-                                ${{deptOptions}}
+                                                <option value="IT">IT</option>
+                                                <option value="Data Science">Data Science</option>
+                                                <option value="AI/ML">AI/ML</option>
+                                                <option value="ECE">ECE</option>
+                                                <option value="EEE">EEE</option>
+                                                <option value="MECH">MECH</option>
+                                                <option value="CIVIL">CIVIL</option>
+                                                <option value="MBA">MBA</option>
+                                                <option value="PHYSICS">PHYSICS</option>
+                                                <option value="CHEMISTRY">CHEMISTRY</option>
+                                                <option value="MATHS">MATHS</option>
+                                                <option value="Others">Others</option>
                             </select>
                         </div>
                         <div class="col-md-6">

@@ -13863,25 +13863,60 @@ def submit_form():
                     questions = form['questions']
                 else:
                     questions = []
-            except:
+            except Exception as e:
+                print(f"Error parsing questions: {e}")
                 questions = []
             
             score = 0
             total_marks = 0
             
-            for q in questions:
-                marks = q.get('marks', 1)
+            # Debug: Print questions structure
+            print(f"Number of questions: {len(questions)}")
+            
+            for i, q in enumerate(questions):
+                # Convert marks to integer safely
+                try:
+                    marks = int(q.get('marks', 1))
+                except (ValueError, TypeError):
+                    print(f"Warning: Invalid marks value for question {i}: {q.get('marks')}. Using default 1.")
+                    marks = 1
+                
                 total_marks += marks
                 
                 answer = answers.get(str(q.get('id')))
-                if answer:
+                print(f"Question {i}: ID={q.get('id')}, Type={q.get('type')}, Answer={answer}, Correct={q.get('correct_answer')}")
+                
+                if answer is not None and answer != '':
                     if q.get('type') == 'mcq':
-                        if str(answer) == str(q.get('correct_answer', 0)):
+                        correct_answer = q.get('correct_answer', 0)
+                        # Convert both to string for comparison
+                        if str(answer).strip() == str(correct_answer).strip():
                             score += marks
+                            print(f"  MCQ Correct! Added {marks} marks")
+                        else:
+                            print(f"  MCQ Incorrect. Answer: '{answer}', Correct: '{correct_answer}'")
+                            
                     elif q.get('type') == 'true_false':
-                        if str(answer).lower() == str(q.get('correct_answer', 'true')).lower():
+                        correct_answer = q.get('correct_answer', 'true')
+                        # Convert both to lowercase string for comparison
+                        if str(answer).strip().lower() == str(correct_answer).strip().lower():
                             score += marks
+                            print(f"  True/False Correct! Added {marks} marks")
+                        else:
+                            print(f"  True/False Incorrect. Answer: '{answer}', Correct: '{correct_answer}'")
+                            
+                    elif q.get('type') == 'short_answer':
+                        correct_answer = q.get('correct_answer', '')
+                        # For short answers, compare case-insensitive
+                        if str(answer).strip().lower() == str(correct_answer).strip().lower():
+                            score += marks
+                            print(f"  Short Answer Correct! Added {marks} marks")
+                        else:
+                            print(f"  Short Answer Incorrect. Answer: '{answer}', Correct: '{correct_answer}'")
+                else:
+                    print(f"  No answer provided for question {i}")
             
+            print(f"Final Score: {score}/{total_marks}")
             percentage = (score / total_marks * 100) if total_marks > 0 else 0
             
             cursor.execute('''
@@ -13967,6 +14002,7 @@ def submit_form():
         })
     except Exception as e:
         print(f"Submit form error: {e}")
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)})
     
 
@@ -18311,6 +18347,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

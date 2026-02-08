@@ -42,9 +42,9 @@ OTP_LENGTH = 6
 
 
 # Database Configuration
-MYSQL_HOST = 'mysql.railway.internal'
+MYSQL_HOST = 'mysql-cm74.railway.internal'
 MYSQL_USER = 'root'
-MYSQL_PASSWORD = 'gNdhMBsFXunRGAMSUZUeFDBvKRTtrYsc'
+MYSQL_PASSWORD = 'YNLFYHPfhtFrgqZzOMwevwhOnKiDyLxJ'
 MYSQL_DB = 'railway'
 
 
@@ -18347,6 +18347,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

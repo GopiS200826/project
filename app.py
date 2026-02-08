@@ -32,7 +32,7 @@ from flask import jsonify, request, session
 from flask import make_response, jsonify, request, session, redirect, url_for
 import io
 
-# Create Flask app ONCE
+# Create Flask app ONC
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-in-production'  # Make sure this is set
 
@@ -18347,6 +18347,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

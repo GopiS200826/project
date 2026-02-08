@@ -537,14 +537,34 @@ def init_db():
                             INDEX idx_department (department)
                             )''')
             
-            # In the init_db() function, update the forms table creation:
+            # Create admin user if not exists
+            cursor.execute("SELECT id FROM users WHERE email = %s", (ADMIN_EMAIL,))
+            if not cursor.fetchone():
+                hashed = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()
+                cursor.execute(
+                    "INSERT INTO users (email, password, name, role, department) VALUES (%s, %s, %s, 'admin', 'IT')",
+                    (ADMIN_EMAIL, hashed, ADMIN_NAME)
+                )
+                print(f"Admin user created: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
+            
+            # Create super admin user if not exists
+            cursor.execute("SELECT id FROM users WHERE email = %s", (SUPER_ADMIN_EMAIL,))
+            if not cursor.fetchone():
+                hashed = hashlib.sha256(SUPER_ADMIN_PASSWORD.encode()).hexdigest()
+                cursor.execute(
+                    "INSERT INTO users (email, password, name, role, department) VALUES (%s, %s, %s, 'super_admin', 'IT')",
+                    (SUPER_ADMIN_EMAIL, hashed, SUPER_ADMIN_NAME)
+                )
+                print(f"Super Admin user created: {SUPER_ADMIN_EMAIL} / {SUPER_ADMIN_PASSWORD}")
+            
+            # Forms table - MUST be created before responses
             cursor.execute('''CREATE TABLE IF NOT EXISTS forms (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 title VARCHAR(200) NOT NULL,
                 description TEXT,
                 created_by INT NOT NULL,
                 department VARCHAR(50) NOT NULL,
-                form_type ENUM('public', 'open', 'confidential') DEFAULT 'open',  # CHANGED: Added 'public'
+                form_type ENUM('public', 'open', 'confidential') DEFAULT 'open',
                 questions JSON,
                 is_published BOOLEAN DEFAULT FALSE,
                 is_student_submission BOOLEAN DEFAULT FALSE,
@@ -565,6 +585,24 @@ def init_db():
                 INDEX idx_share_token (share_token)
             )''')
             
+            # Responses table - MUST be created BEFORE response_downloads
+            cursor.execute('''CREATE TABLE IF NOT EXISTS responses (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            form_id INT NOT NULL,
+                            student_id INT NOT NULL,
+                            answers JSON NOT NULL,
+                            score DECIMAL(5,2) DEFAULT 0,
+                            total_marks DECIMAL(5,2) DEFAULT 0,
+                            percentage DECIMAL(5,2) DEFAULT 0,
+                            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            time_taken INT,
+                            FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
+                            FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+                            INDEX idx_form_response (form_id),
+                            INDEX idx_student_response (student_id),
+                            UNIQUE KEY unique_response (form_id, student_id)
+                            )''')
+            
             # Notifications table
             cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
                             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -581,7 +619,7 @@ def init_db():
                             INDEX idx_created_at (created_at)
                         )''')
             
-            # In the init_db() function, replace the otps table creation with:
+            # OTPs table
             cursor.execute('''CREATE TABLE IF NOT EXISTS otps (
                             id INT AUTO_INCREMENT PRIMARY KEY,
                             email VARCHAR(100) NOT NULL,
@@ -633,7 +671,7 @@ def init_db():
                             UNIQUE KEY unique_assignment (form_id, student_id)
                             )''')
             
-            # Response download permissions table
+            # Response download permissions table - MUST come AFTER responses
             cursor.execute('''CREATE TABLE IF NOT EXISTS response_downloads (
                             id INT AUTO_INCREMENT PRIMARY KEY,
                             response_id INT NOT NULL,
@@ -642,8 +680,8 @@ def init_db():
                             access_granted BOOLEAN DEFAULT FALSE,
                             granted_by INT,
                             granted_at TIMESTAMP,
-                download_count INT DEFAULT 0,
-                last_downloaded_at TIMESTAMP NULL,
+                            download_count INT DEFAULT 0,
+                            last_downloaded_at TIMESTAMP NULL,
                             download_token VARCHAR(100) UNIQUE,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             FOREIGN KEY (response_id) REFERENCES responses(id) ON DELETE CASCADE,
@@ -656,24 +694,6 @@ def init_db():
                             INDEX idx_access_granted (access_granted),
                             INDEX idx_download_token (download_token),
                             UNIQUE KEY unique_response_student (response_id, student_id)
-                            )''')
-            
-            # Responses table
-            cursor.execute('''CREATE TABLE IF NOT EXISTS responses (
-                            id INT AUTO_INCREMENT PRIMARY KEY,
-                            form_id INT NOT NULL,
-                            student_id INT NOT NULL,
-                            answers JSON NOT NULL,
-                            score DECIMAL(5,2) DEFAULT 0,
-                            total_marks DECIMAL(5,2) DEFAULT 0,
-                            percentage DECIMAL(5,2) DEFAULT 0,
-                            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            time_taken INT,
-                            FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
-                            FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
-                            INDEX idx_form_response (form_id),
-                            INDEX idx_student_response (student_id),
-                            UNIQUE KEY unique_response (form_id, student_id)
                             )''')
             
             # Student form reviews table
@@ -693,26 +713,6 @@ def init_db():
                             INDEX idx_student_review (student_id),
                             INDEX idx_reviewer (reviewer_id)
                             )''')
-            
-            # Create admin user if not exists
-            cursor.execute("SELECT id FROM users WHERE email = %s", (ADMIN_EMAIL,))
-            if not cursor.fetchone():
-                hashed = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()
-                cursor.execute(
-                    "INSERT INTO users (email, password, name, role, department) VALUES (%s, %s, %s, 'admin', 'IT')",
-                    (ADMIN_EMAIL, hashed, ADMIN_NAME)
-                )
-                print(f"Admin user created: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
-            
-            # Create super admin user if not exists
-            cursor.execute("SELECT id FROM users WHERE email = %s", (SUPER_ADMIN_EMAIL,))
-            if not cursor.fetchone():
-                hashed = hashlib.sha256(SUPER_ADMIN_PASSWORD.encode()).hexdigest()
-                cursor.execute(
-                    "INSERT INTO users (email, password, name, role, department) VALUES (%s, %s, %s, 'super_admin', 'IT')",
-                    (SUPER_ADMIN_EMAIL, hashed, SUPER_ADMIN_NAME)
-                )
-                print(f"Super Admin user created: {SUPER_ADMIN_EMAIL} / {SUPER_ADMIN_PASSWORD}")
             
             connection.commit()
             print("Database initialized successfully!")
@@ -18347,6 +18347,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

@@ -32,7 +32,7 @@ from flask import jsonify, request, session
 from flask import make_response, jsonify, request, session, redirect, url_for
 import io
 
-# Create Flask app ON
+# Create Flask app ONCE
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-in-production'  # Make sure this is set
 
@@ -520,14 +520,9 @@ def init_db():
             cursorclass=pymysql.cursors.DictCursor
         )
         
-        print(f"Connected to MySQL server. Creating/checking database: {MYSQL_DB}")
-        
         with connection.cursor() as cursor:
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}")
-            print(f"Database {MYSQL_DB} created/verified")
-            
             cursor.execute(f"USE {MYSQL_DB}")
-            print(f"Switched to database {MYSQL_DB}")
             
             # Users table - Updated to include super_admin role
             cursor.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -699,39 +694,25 @@ def init_db():
                             INDEX idx_reviewer (reviewer_id)
                             )''')
             
-              # Create admin user if not exists
-            print(f"Checking for admin user: {ADMIN_EMAIL}")
+            # Create admin user if not exists
             cursor.execute("SELECT id FROM users WHERE email = %s", (ADMIN_EMAIL,))
-            admin_exists = cursor.fetchone()
-            print(f"Admin exists check: {admin_exists}")
-            
-            if not admin_exists:
-                print(f"Creating admin user: {ADMIN_EMAIL}")
+            if not cursor.fetchone():
                 hashed = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()
                 cursor.execute(
                     "INSERT INTO users (email, password, name, role, department) VALUES (%s, %s, %s, 'admin', 'IT')",
                     (ADMIN_EMAIL, hashed, ADMIN_NAME)
                 )
-                print(f"Admin user created: {ADMIN_EMAIL}")
-            else:
-                print(f"Admin user already exists: {ADMIN_EMAIL}")
+                print(f"Admin user created: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
             
             # Create super admin user if not exists
-            print(f"Checking for super admin user: {SUPER_ADMIN_EMAIL}")
             cursor.execute("SELECT id FROM users WHERE email = %s", (SUPER_ADMIN_EMAIL,))
-            super_admin_exists = cursor.fetchone()
-            print(f"Super admin exists check: {super_admin_exists}")
-            
-            if not super_admin_exists:
-                print(f"Creating super admin user: {SUPER_ADMIN_EMAIL}")
+            if not cursor.fetchone():
                 hashed = hashlib.sha256(SUPER_ADMIN_PASSWORD.encode()).hexdigest()
                 cursor.execute(
                     "INSERT INTO users (email, password, name, role, department) VALUES (%s, %s, %s, 'super_admin', 'IT')",
                     (SUPER_ADMIN_EMAIL, hashed, SUPER_ADMIN_NAME)
                 )
-                print(f"Super Admin user created: {SUPER_ADMIN_EMAIL}")
-            else:
-                print(f"Super Admin user already exists: {SUPER_ADMIN_EMAIL}")
+                print(f"Super Admin user created: {SUPER_ADMIN_EMAIL} / {SUPER_ADMIN_PASSWORD}")
             
             connection.commit()
             print("Database initialized successfully!")
@@ -18366,12 +18347,6 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-
-
-
-
-
 
 
 

@@ -13842,164 +13842,207 @@ def take_form(form_id):
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
 
+import threading
+import time
+
 @app.route('/submit-form', methods=['POST'])
 @login_required
 def submit_form():
     try:
+        start_time = time.time()
         data = request.json
         form_id = data.get('form_id')
         answers = data.get('answers', {})
         
+        # Get user info early
+        student_id = session['user_id']
+        student_name = session['name']
+        
         connection = get_db()
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT * FROM forms WHERE id = %s', (form_id,))
-            form = cursor.fetchone()
-            
-            # Parse JSON questions
-            try:
-                if form['questions'] and isinstance(form['questions'], str):
-                    questions = json.loads(form['questions'])
-                elif form['questions'] and isinstance(form['questions'], dict):
-                    questions = form['questions']
-                else:
-                    questions = []
-            except Exception as e:
-                print(f"Error parsing questions: {e}")
+        
+        try:
+            with connection.cursor() as cursor:
+                # 1. Single query to get form with creator info
+                cursor.execute('''
+                    SELECT f.*, u.id as creator_id, u.email as creator_email, u.name as creator_name
+                    FROM forms f
+                    JOIN users u ON f.created_by = u.id
+                    WHERE f.id = %s
+                ''', (form_id,))
+                form = cursor.fetchone()
+                
+                if not form:
+                    return jsonify({'success': False, 'error': 'Form not found'})
+                
+                # Check for duplicate submission quickly
+                cursor.execute('''
+                    SELECT 1 FROM responses WHERE form_id = %s AND student_id = %s LIMIT 1
+                ''', (form_id, student_id))
+                if cursor.fetchone():
+                    return jsonify({'success': False, 'error': 'Already submitted'})
+                
+                # 2. Parse questions once and reuse
                 questions = []
-            
-            score = 0
-            total_marks = 0
-            
-            # Debug: Print questions structure
-            print(f"Number of questions: {len(questions)}")
-            
-            for i, q in enumerate(questions):
-                # Convert marks to integer safely
                 try:
-                    marks = int(q.get('marks', 1))
-                except (ValueError, TypeError):
-                    print(f"Warning: Invalid marks value for question {i}: {q.get('marks')}. Using default 1.")
-                    marks = 1
-                
-                total_marks += marks
-                
-                answer = answers.get(str(q.get('id')))
-                print(f"Question {i}: ID={q.get('id')}, Type={q.get('type')}, Answer={answer}, Correct={q.get('correct_answer')}")
-                
-                if answer is not None and answer != '':
-                    if q.get('type') == 'mcq':
-                        correct_answer = q.get('correct_answer', 0)
-                        # Convert both to string for comparison
-                        if str(answer).strip() == str(correct_answer).strip():
-                            score += marks
-                            print(f"  MCQ Correct! Added {marks} marks")
+                    if form['questions']:
+                        if isinstance(form['questions'], str):
+                            questions = json.loads(form['questions'])
                         else:
-                            print(f"  MCQ Incorrect. Answer: '{answer}', Correct: '{correct_answer}'")
+                            questions = form['questions']
+                except Exception as e:
+                    print(f"Error parsing questions: {e}")
+                    questions = []
+                
+                # 3. Pre-calculate everything in memory first
+                question_map = {}
+                total_marks_all = 0
+                
+                # Build question map and calculate total marks in one pass
+                for q in questions:
+                    qid = str(q.get('id'))
+                    marks = q.get('marks', 1)
+                    marks = int(marks) if isinstance(marks, (int, float, str)) and str(marks).isdigit() else 1
+                    
+                    question_map[qid] = {
+                        'type': q.get('type'),
+                        'correct_answer': str(q.get('correct_answer', '')).strip().lower(),
+                        'marks': marks
+                    }
+                    total_marks_all += marks
+                
+                # 4. Calculate score efficiently
+                score = 0
+                answered_marks = 0
+                
+                # Use dictionary view for faster iteration
+                for answer_key, answer_value in answers.items():
+                    if answer_key in question_map:
+                        q = question_map[answer_key]
+                        answered_marks += q['marks']
+                        
+                        if answer_value not in (None, '', [], {}):
+                            answer_str = str(answer_value).strip().lower()
+                            if answer_str == q['correct_answer']:
+                                score += q['marks']
+                
+                # Calculate percentage
+                percentage = (score / total_marks_all * 100) if total_marks_all > 0 else 0
+                
+                print(f"Score calculation took: {time.time() - start_time:.2f}s")
+                
+                # 5. Batch database operations
+                # Insert response
+                cursor.execute('''
+                    INSERT INTO responses (form_id, student_id, answers, score, total_marks, percentage)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (form_id, student_id, json.dumps(answers), score, total_marks_all, percentage))
+                response_id = cursor.lastrowid
+                
+                # Update assignment
+                cursor.execute('''
+                    UPDATE assignments SET is_completed = TRUE WHERE form_id = %s AND student_id = %s
+                ''', (form_id, student_id))
+                
+                # 6. Handle download access - start background processing
+                def process_download_and_notifications():
+                    try:
+                        bg_conn = get_db()
+                        with bg_conn.cursor() as bg_cursor:
+                            download_message = ""
+                            download_granted = False
+                            download_token = None
                             
-                    elif q.get('type') == 'true_false':
-                        correct_answer = q.get('correct_answer', 'true')
-                        # Convert both to lowercase string for comparison
-                        if str(answer).strip().lower() == str(correct_answer).strip().lower():
-                            score += marks
-                            print(f"  True/False Correct! Added {marks} marks")
-                        else:
-                            print(f"  True/False Incorrect. Answer: '{answer}', Correct: '{correct_answer}'")
+                            if form['form_type'] == 'public':
+                                # Public forms
+                                download_token, _ = create_response_download_entry(response_id, student_id, form_id)
+                                if download_token:
+                                    bg_cursor.execute('''
+                                        UPDATE response_downloads 
+                                        SET access_granted = TRUE,
+                                            granted_by = %s,
+                                            granted_at = CURRENT_TIMESTAMP
+                                        WHERE response_id = %s AND student_id = %s
+                                    ''', (student_id, response_id, student_id))
+                                    download_granted = True
+                                    download_message = "Download access automatically granted."
+                                else:
+                                    download_message = "Download token generation failed."
+                            else:
+                                # Other form types
+                                download_token, _ = create_response_download_entry(response_id, student_id, form_id)
+                                download_message = "Download access requested."
+                                
+                                # Notification for creator if needed
+                                if form['creator_id'] != student_id:
+                                    create_notification(
+                                        user_id=form['creator_id'],
+                                        title='New Response Download Request',
+                                        message=f'{student_name} has submitted your form "{form["title"]}" and requested download access.',
+                                        type='warning',
+                                        link=f'/form/{form_id}/response-downloads'
+                                    )
                             
-                    elif q.get('type') == 'short_answer':
-                        correct_answer = q.get('correct_answer', '')
-                        # For short answers, compare case-insensitive
-                        if str(answer).strip().lower() == str(correct_answer).strip().lower():
-                            score += marks
-                            print(f"  Short Answer Correct! Added {marks} marks")
-                        else:
-                            print(f"  Short Answer Incorrect. Answer: '{answer}', Correct: '{correct_answer}'")
-                else:
-                    print(f"  No answer provided for question {i}")
-            
-            print(f"Final Score: {score}/{total_marks}")
-            percentage = (score / total_marks * 100) if total_marks > 0 else 0
-            
-            cursor.execute('''
-                INSERT INTO responses (form_id, student_id, answers, score, total_marks, percentage)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            ''', (form_id, session['user_id'], json.dumps(answers), score, total_marks, percentage))
-            response_id = cursor.lastrowid
-            
-            cursor.execute('''
-                UPDATE assignments SET is_completed = TRUE 
-                WHERE form_id = %s AND student_id = %s
-            ''', (form_id, session['user_id']))
-            
-            # Create download entry based on form type
-            if form['form_type'] == 'public':
-                # Public forms: Auto-grant download access
-                download_token, _ = create_response_download_entry(response_id, session['user_id'], form_id)
-                if download_token:
-                    cursor.execute('''
-                        UPDATE response_downloads 
-                        SET access_granted = TRUE,
-                            granted_by = %s,
-                            granted_at = CURRENT_TIMESTAMP
-                        WHERE response_id = %s AND student_id = %s
-                    ''', (session['user_id'], response_id, session['user_id']))
-            else:
-                # Open/Confidential forms: Create pending request
-                download_token, form_details = create_response_download_entry(response_id, session['user_id'], form_id)
+                            # Create student notification
+                            create_notification(
+                                user_id=student_id,
+                                title='Form Submitted',
+                                message=f'You have submitted the form "{form["title"]}". Score: {score}/{total_marks_all} ({percentage:.1f}%) {download_message}',
+                                type='success',
+                                link=f'/my-responses'
+                            )
+                            
+                            # Create form creator notification
+                            if form['creator_id'] != student_id:
+                                create_notification(
+                                    user_id=form['creator_id'],
+                                    title='New Form Submission',
+                                    message=f'{student_name} has submitted your form "{form["title"]}". Score: {score}/{total_marks_all}',
+                                    type='info',
+                                    link=f'/form/{form_id}/responses'
+                                )
+                            
+                            bg_conn.commit()
+                    except Exception as e:
+                        print(f"Background processing error: {e}")
+                    finally:
+                        if 'bg_conn' in locals():
+                            bg_conn.close()
                 
-                # Create notification for form creator if different from student
-                if form_details and form_details['creator_id'] != session['user_id']:
-                    create_notification(
-                        user_id=form_details['creator_id'],
-                        title='New Response Download Request',
-                        message=f'{session["name"]} has submitted your form "{form["title"]}" and requested download access.',
-                        type='warning',
-                        link=f'/form/{form_id}/response-downloads'
-                    )
+                # Start background processing
+                bg_thread = threading.Thread(target=process_download_and_notifications, daemon=True)
+                bg_thread.start()
+                
+                # 7. Commit main transaction
+                connection.commit()
+                
+                print(f"Total time before response: {time.time() - start_time:.2f}s")
+                
+                # 8. Return response immediately
+                response_data = {
+                    'success': True,
+                    'score': score,
+                    'total_marks': total_marks_all,
+                    'percentage': round(percentage, 2),
+                    'form_type': form['form_type'],
+                    'can_download': form['form_type'] == 'public',
+                    'download_requested': form['form_type'] != 'public',
+                    'message': 'Form submitted successfully!' + 
+                              (' Download access granted.' if form['form_type'] == 'public' else ' Download requested.'),
+                    'show_download_button': True,
+                    'download_status': 'granted' if form['form_type'] == 'public' else 'requested'
+                }
+                
+                return jsonify(response_data)
+                
+        except Exception as e:
+            connection.rollback()
+            print(f"Submit form error: {e}")
+            traceback.print_exc()
+            return jsonify({'success': False, 'error': str(e)})
             
-            connection.commit()
+        finally:
+            connection.close()
             
-            # Get form creator details for notifications
-            cursor.execute('''
-                SELECT u.id as creator_id, u.email as creator_email, u.name as creator_name,
-                       f.title, u2.email as student_email, u2.name as student_name
-                FROM forms f
-                JOIN users u ON f.created_by = u.id
-                JOIN users u2 ON %s = u2.id
-                WHERE f.id = %s
-            ''', (session['user_id'], form_id))
-            form_details = cursor.fetchone()
-        
-        connection.close()
-        
-        # Create notification for student
-        create_notification(
-            user_id=session['user_id'],
-            title='Form Submitted',
-            message=f'You have submitted the form "{form["title"]}". Score: {score}/{total_marks} ({percentage:.1f}%)',
-            type='success',
-            link=f'/my-responses'
-        )
-        
-        # Create notification for form creator
-        if form_details and form_details['creator_id'] != session['user_id']:
-            create_notification(
-                user_id=form_details['creator_id'],
-                title='New Form Submission',
-                message=f'{session["name"]} has submitted your form "{form["title"]}". Score: {score}/{total_marks}',
-                type='info',
-                link=f'/form/{form_id}/responses'
-            )
-        
-        return jsonify({
-            'success': True,
-            'score': score,
-            'total_marks': total_marks,
-            'percentage': round(percentage, 2),
-            'form_type': form['form_type'],
-            'can_download': form['form_type'] == 'public',
-            'download_requested': form['form_type'] != 'public',
-            'message': 'Download access ' + ('automatically granted' if form['form_type'] == 'public' else 'request submitted')
-        })
     except Exception as e:
         print(f"Submit form error: {e}")
         traceback.print_exc()
@@ -18347,6 +18390,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

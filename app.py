@@ -540,7 +540,8 @@ def init_db():
                             department VARCHAR(50) DEFAULT 'IT',
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             INDEX idx_email (email),
-                            INDEX idx_department (department)
+                            INDEX idx_department (department),
+                            phone int(10)
                             )''')
             
             # Create admin user if not exists
@@ -18397,6 +18398,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

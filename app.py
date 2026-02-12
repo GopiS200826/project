@@ -8780,7 +8780,7 @@ def settings():
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Phone Number</label>
                                             <input type="tel" class="form-control" name="phone" 
-                                                   value="''' + (user['phone'] if user and user['phone'] else '') + '''">
+                                                   value="''' + (user.get('phone', '') if user else '') + '''">
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Department</label>
@@ -18390,6 +18390,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

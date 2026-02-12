@@ -40,7 +40,6 @@ app.secret_key = 'your-secret-key-change-in-production'  # Make sure this is set
 OTP_EXPIRY_MINUTES = 10
 OTP_LENGTH = 6
 
-
 # Database Configuration
 MYSQL_HOST = 'mysql-cm74.railway.internal'
 MYSQL_USER = 'root'
@@ -8411,7 +8410,7 @@ def upload_profile_picture():
         relative_path = f"uploads/profile_pictures/{filename}"
         
         try:
-            cursor = mysql.connection.cursor()
+            cursor = mysql.cursor()
             cursor.execute("UPDATE users SET profile_picture = %s WHERE id = %s", (relative_path, user_id))
             mysql.connection.commit()
             cursor.close()
@@ -8439,7 +8438,7 @@ def get_user_stats():
     
     user_id = session['user_id']
     
-    cursor = mysql.connection.cursor()
+    cursor = mysql.cursor()
     
     if session['role'] in ['teacher', 'admin', 'super_admin']:
         cursor.execute("""
@@ -8759,7 +8758,6 @@ def settings():
                     <div class="settings-content p-4">
                         <div class="tab-content" id="settingsTabContent">
                             <!-- Profile Tab -->
-                            <!-- Profile Tab -->
                             <div class="tab-pane fade show active" id="profile">
                                 <div class="settings-header">
                                     <div class="d-flex align-items-center">
@@ -8778,22 +8776,22 @@ def settings():
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Full Name</label>
                                             <input type="text" class="form-control" name="name" 
-                                                   value="''' + (user.get('name', '') if user else '') + '''" required>
+                                                   value="''' + (user['name'] if user else '') + '''" required>
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Email Address</label>
                                             <input type="email" class="form-control" name="email" 
-                                                   value="''' + (user.get('email', '') if user else '') + '''" required>
+                                                   value="''' + (user['email'] if user else '') + '''" required>
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Phone Number</label>
                                             <input type="tel" class="form-control" name="phone" 
-                                                   value="''' + (user.get('phone', '') if user else '') + '''">
+                                                   value="''' + (user['phone'] if user and user['phone'] else '') + '''">
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Department</label>
                                             <input type="text" class="form-control" name="department" 
-                                                   value="''' + (user.get('department', '') if user else '') + '''">
+                                                   value="''' + (user['department'] if user and user['department'] else '') + '''">
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Role</label>
@@ -8801,7 +8799,7 @@ def settings():
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">User ID</label>
-                                            <input type="text" class="form-control" value="''' + (str(user.get('id', '')) if user else '') + '''" readonly>
+                                            <input type="text" class="form-control" value="''' + (str(user['id']) if user else '') + '''" readonly>
                                         </div>
                                     </div>
                                     <button type="submit" class="btn btn-primary">
@@ -9305,6 +9303,33 @@ def update_profile():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+def verify_password(plain_password, hashed_password):
+    """Verify a password against its hash"""
+    try:
+        # Check if it's our hash format
+        if hashed_password and hashed_password.startswith('pbkdf2_sha256$'):
+            parts = hashed_password.split('$', 3)
+            if len(parts) == 4:
+                algorithm, iterations, salt, hash_str = parts
+                
+                if algorithm == 'pbkdf2_sha256':
+                    # Hash the plain password with the same salt and iterations
+                    hash_obj = hashlib.pbkdf2_hmac(
+                        'sha256',
+                        plain_password.encode('utf-8'),
+                        salt.encode('utf-8'),
+                        int(iterations)
+                    )
+                    new_hash_str = base64.b64encode(hash_obj).decode('utf-8')
+                    return new_hash_str == hash_str
+        
+        # Fallback for plain text passwords (if any exist)
+        return plain_password == hashed_password
+        
+    except Exception as e:
+        print(f"Password verification error: {e}")
+        return False
+    
 @app.route('/api/settings/change-password', methods=['POST'])
 def change_password():
     if 'user_id' not in session:
@@ -9315,30 +9340,56 @@ def change_password():
     new_password = request.form.get('new_password')
     confirm_password = request.form.get('confirm_password')
     
+    # Validation
+    if not current_password or not new_password or not confirm_password:
+        return jsonify({'success': False, 'message': 'All fields are required'})
+    
     if new_password != confirm_password:
-        return jsonify({'success': False, 'message': 'Passwords do not match'})
+        return jsonify({'success': False, 'message': 'New passwords do not match'})
+    
+    if len(new_password) < 8:
+        return jsonify({'success': False, 'message': 'Password must be at least 8 characters'})
     
     try:
-        cursor = mysql.connection.cursor()
+        # Remove dictionary=True - mysql.connector doesn't support it
+        cursor = mysql.cursor()
+        
+        # Get current password from database
         cursor.execute("SELECT password FROM users WHERE id = %s", (user_id,))
         result = cursor.fetchone()
         
         if not result:
+            cursor.close()
             return jsonify({'success': False, 'message': 'User not found'})
         
-        # Verify current password (assuming plain text for demo - use hashing in production)
-        if result['password'] != current_password:
+        # Access by index (first column)
+        stored_password = result[0]
+        
+        # Verify current password using the verify_password function
+        if not verify_password(current_password, stored_password):
+            cursor.close()
             return jsonify({'success': False, 'message': 'Current password is incorrect'})
         
-        # Update password
-        cursor.execute("UPDATE users SET password = %s WHERE id = %s", (new_password, user_id))
-        mysql.connection.commit()
+        # Hash the new password
+        hashed_password = hash_password(new_password)
+        
+        # Update password in database
+        cursor.execute("UPDATE users SET password = %s WHERE id = %s", (hashed_password, user_id))
+        mysql.commit()
         cursor.close()
         
-        return jsonify({'success': True, 'message': 'Password changed successfully'})
+        return jsonify({
+            'success': True, 
+            'message': 'Password changed successfully'
+        })
+        
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
+        print(f"Password change error: {e}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False, 
+            'message': f'Error changing password: {str(e)}'
+        })
 @app.route('/api/settings/update-notifications', methods=['POST'])
 def update_notification_preferences():
     if 'user_id' not in session:
@@ -9352,7 +9403,7 @@ def update_notification_preferences():
     weekly_digest = request.form.get('weekly_digest') == 'true'
     
     try:
-        cursor = mysql.connection.cursor()
+        cursor = mysql.cursor()
         # Check if table exists, create if not
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS notification_preferences (
@@ -13850,6 +13901,7 @@ def take_form(form_id):
         print(f"Take form error: {e}")
         traceback.print_exc()
         return html_wrapper('Error', f'<div class="alert alert-danger">Error: {str(e)}</div>', get_navbar(), '')
+    
 
 import threading
 import time
@@ -14056,7 +14108,6 @@ def submit_form():
         print(f"Submit form error: {e}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)})
-    
 
 @app.route('/my-responses/downloads')
 @login_required
@@ -18211,32 +18262,38 @@ def logout():
     
     # Redirect immediately
     return redirect('/login')
+
 @app.route('/fast-submit-form', methods=['POST'])
 @login_required
 @student_required
 def fast_submit_form():
-    """Fast form submission with minimal processing"""
+    """Fast form submission with all functionality from original submit_form"""
     try:
         if not request.is_json:
             return jsonify({'success': False, 'error': 'JSON data required'}), 400
         
         data = request.get_json()
         form_id = data.get('form_id')
-        answers = data.get('answers')
+        answers = data.get('answers', {})
         time_taken = data.get('time_taken', 0)
         
         if not form_id or not answers:
             return jsonify({'success': False, 'error': 'Missing required data'}), 400
         
+        # Get user info once
+        student_id = session['user_id']
+        student_name = session['name']
+        
         connection = get_db()
         
         try:
             with connection.cursor() as cursor:
-                # Get form details quickly
+                # 1. Get form and creator details in a single query
                 cursor.execute('''
-                    SELECT id, questions, created_by, title, form_type
-                    FROM forms 
-                    WHERE id = %s
+                    SELECT f.*, u.id as creator_id, u.email as creator_email, u.name as creator_name
+                    FROM forms f
+                    JOIN users u ON f.created_by = u.id
+                    WHERE f.id = %s
                 ''', (form_id,))
                 form = cursor.fetchone()
                 
@@ -18247,108 +18304,185 @@ def fast_submit_form():
                 cursor.execute('''
                     SELECT id FROM responses 
                     WHERE form_id = %s AND student_id = %s
-                ''', (form_id, session['user_id']))
+                ''', (form_id, student_id))
                 if cursor.fetchone():
                     return jsonify({'success': False, 'error': 'Already submitted'}), 400
                 
-                # Calculate score in background thread for speed
-                def calculate_score_in_background(form_id, student_id, answers, time_taken, form_title):
-                    try:
-                        conn = get_db()
-                        with conn.cursor() as bg_cursor:
-                            # Get questions for scoring
-                            bg_cursor.execute('SELECT questions FROM forms WHERE id = %s', (form_id,))
-                            form_data = bg_cursor.fetchone()
+                # Parse questions efficiently
+                questions = []
+                try:
+                    if form['questions']:
+                        if isinstance(form['questions'], str):
+                            questions = json.loads(form['questions'])
+                        elif isinstance(form['questions'], (dict, list)):
+                            questions = form['questions']
+                except Exception as e:
+                    print(f"Error parsing questions: {e}")
+                
+                score = 0
+                total_marks = 0
+                
+                # Pre-process questions for faster access
+                question_map = {}
+                for q in questions:
+                    qid = str(q.get('id'))
+                    question_map[qid] = {
+                        'type': q.get('type'),
+                        'correct_answer': str(q.get('correct_answer', '')).strip().lower(),
+                        'marks': int(q.get('marks', 1)) if str(q.get('marks', 1)).isdigit() else 1
+                    }
+                
+                # Calculate score more efficiently
+                for answer_key, answer_value in answers.items():
+                    if answer_key in question_map:
+                        q = question_map[answer_key]
+                        marks = q['marks']
+                        total_marks += marks
+                        
+                        if answer_value is not None and answer_value != '':
+                            answer_str = str(answer_value).strip().lower()
                             
-                            if form_data and form_data['questions']:
-                                questions = json.loads(form_data['questions']) if isinstance(form_data['questions'], str) else form_data['questions']
-                                score = 0
-                                total_marks = 0
-                                
-                                # Quick scoring
-                                for q in questions:
-                                    if q.get('type') in ['mcq', 'truefalse']:
-                                        total_marks += 1
-                                        q_id = str(q.get('id'))
-                                        correct_answer = q.get('correctAnswer', '')
-                                        user_answer = answers.get(q_id, '')
-                                        
-                                        if user_answer and str(user_answer).strip().lower() == str(correct_answer).strip().lower():
-                                            score += 1
-                                
-                                percentage = (score / total_marks * 100) if total_marks > 0 else 0
-                                
-                                # Save response
-                                bg_cursor.execute('''
-                                    INSERT INTO responses 
-                                    (form_id, student_id, answers, score, total_marks, percentage, time_taken)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                                ''', (form_id, student_id, json.dumps(answers), score, total_marks, round(percentage, 2), time_taken))
-                                
-                                # Update assignments if exists
-                                bg_cursor.execute('''
-                                    UPDATE assignments 
-                                    SET is_completed = TRUE 
-                                    WHERE form_id = %s AND student_id = %s
-                                ''', (form_id, student_id))
-                                
-                                # Create notification
-                                bg_cursor.execute('''
-                                    INSERT INTO notifications 
-                                    (user_id, title, message, type, link)
-                                    VALUES (%s, %s, %s, %s, %s)
-                                ''', (session['user_id'], 'Form Submitted', 
-                                      f'You submitted "{form_title}" with score: {round(percentage, 2)}%', 
-                                      'success', '/my-responses'))
-                                
-                                # Notify teacher
-                                bg_cursor.execute('SELECT created_by FROM forms WHERE id = %s', (form_id,))
-                                form_creator = bg_cursor.fetchone()
-                                if form_creator:
+                            # Compare answers based on type
+                            if q['type'] in ['mcq', 'true_false', 'short_answer']:
+                                if answer_str == q['correct_answer']:
+                                    score += marks
+                
+                # Handle any questions that weren't answered
+                for qid, q in question_map.items():
+                    if qid not in answers:
+                        total_marks += q['marks']
+                
+                percentage = (score / total_marks * 100) if total_marks > 0 else 0
+                
+                # Start background processing for ALL functionality
+                def process_submission_in_background():
+                    """Process all submission logic in background"""
+                    try:
+                        bg_conn = get_db()
+                        with bg_conn.cursor() as bg_cursor:
+                            # Re-fetch form details to ensure fresh connection
+                            bg_cursor.execute('''
+                                SELECT f.*, u.id as creator_id, u.email as creator_email, u.name as creator_name
+                                FROM forms f
+                                JOIN users u ON f.created_by = u.id
+                                WHERE f.id = %s
+                            ''', (form_id,))
+                            bg_form = bg_cursor.fetchone()
+                            
+                            if not bg_form:
+                                return
+                            
+                            # Insert response with time_taken
+                            bg_cursor.execute('''
+                                INSERT INTO responses 
+                                (form_id, student_id, answers, score, total_marks, percentage, time_taken)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ''', (form_id, student_id, json.dumps(answers), score, total_marks, round(percentage, 2), time_taken))
+                            
+                            response_id = bg_cursor.lastrowid
+                            
+                            # Update assignments
+                            bg_cursor.execute('''
+                                UPDATE assignments 
+                                SET is_completed = TRUE 
+                                WHERE form_id = %s AND student_id = %s
+                            ''', (form_id, student_id))
+                            
+                            # Create download entry efficiently
+                            download_data = None
+                            if bg_form['form_type'] == 'public':
+                                # Public forms: Auto-grant download access
+                                download_token, _ = create_response_download_entry(response_id, student_id, form_id)
+                                if download_token:
                                     bg_cursor.execute('''
-                                        INSERT INTO notifications 
-                                        (user_id, title, message, type, link)
-                                        VALUES (%s, %s, %s, %s, %s)
-                                    ''', (form_creator['created_by'], 'New Submission', 
-                                          f'Student {session["name"]} submitted "{form_title}"', 
-                                          'info', f'/form/{form_id}/responses'))
+                                        UPDATE response_downloads 
+                                        SET access_granted = TRUE,
+                                            granted_by = %s,
+                                            granted_at = CURRENT_TIMESTAMP
+                                        WHERE response_id = %s AND student_id = %s
+                                    ''', (student_id, response_id, student_id))
+                                    download_data = {'token': download_token, 'granted': True}
+                            else:
+                                # Open/Confidential forms: Create pending request
+                                download_token, form_details = create_response_download_entry(response_id, student_id, form_id)
+                                download_data = {'token': download_token, 'granted': False}
                                 
-                                conn.commit()
-                                
-                                # Create download permission entry in background
-                                download_token, form_details = create_response_download_entry(
-                                    bg_cursor.lastrowid, session['user_id'], form_id
+                                # Create notification for form creator if different from student
+                                if bg_form['creator_id'] != student_id:
+                                    # Use async task for notification if possible
+                                    # For now, we'll do it inline but you could use threading
+                                    create_notification(
+                                        user_id=bg_form['creator_id'],
+                                        title='New Response Download Request',
+                                        message=f'{student_name} has submitted your form "{bg_form["title"]}" and requested download access.',
+                                        type='warning',
+                                        link=f'/form/{form_id}/response-downloads'
+                                    )
+                            
+                            # Create notifications asynchronously if possible
+                            # Student notification
+                            create_notification(
+                                user_id=student_id,
+                                title='Form Submitted',
+                                message=f'You have submitted the form "{bg_form["title"]}". Score: {score}/{total_marks} ({percentage:.1f}%)',
+                                type='success',
+                                link=f'/my-responses'
+                            )
+                            
+                            # Form creator notification (if different from student)
+                            if bg_form['creator_id'] != student_id:
+                                create_notification(
+                                    user_id=bg_form['creator_id'],
+                                    title='New Form Submission',
+                                    message=f'{student_name} has submitted your form "{bg_form["title"]}". Score: {score}/{total_marks}',
+                                    type='info',
+                                    link=f'/form/{form_id}/responses'
                                 )
-                                
+                            
+                            bg_conn.commit()
+                            
+                            # Optional: Log completion
+                            print(f"Background processing completed for form {form_id}, student {student_id}")
+                            
                     except Exception as e:
-                        print(f"Background scoring error: {e}")
+                        print(f"Background processing error: {e}")
+                        traceback.print_exc()
+                        if 'bg_conn' in locals():
+                            bg_conn.rollback()
                     finally:
-                        if 'conn' in locals():
-                            conn.close()
+                        if 'bg_conn' in locals():
+                            bg_conn.close()
                 
-                # Start background scoring immediately
-                threading.Thread(target=calculate_score_in_background, args=(
-                    form_id, session['user_id'], answers, time_taken, form['title']
-                ), daemon=True).start()
+                # Start background processing immediately
+                thread = threading.Thread(target=process_submission_in_background, daemon=True)
+                thread.start()
                 
-                # Return immediate success without waiting for scoring
-                connection.commit()
-                
+                # Return immediate success response without waiting for background processing
                 return jsonify({
                     'success': True,
-                    'message': 'Form submitted successfully!',
+                    'score': score,
+                    'total_marks': total_marks,
+                    'percentage': round(percentage, 2),
+                    'form_type': form['form_type'],
+                    'can_download': form['form_type'] == 'public',
+                    'download_requested': form['form_type'] != 'public',
+                    'message': 'Form submitted successfully! ' + 
+                              ('Download access automatically granted' if form['form_type'] == 'public' else 'Download request submitted'),
+                    'background_processing': True,
                     'redirect': '/my-responses'
                 })
                 
         except Exception as e:
             connection.rollback()
             print(f"Fast submit error: {e}")
+            traceback.print_exc()
             return jsonify({'success': False, 'error': str(e)}), 500
         finally:
             connection.close()
             
     except Exception as e:
         print(f"Fast submit error: {e}")
+        traceback.print_exc()
         return jsonify({'success': False, 'error': 'Submission failed'}), 500
         
 # Add error handlers
@@ -18399,14 +18533,6 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-
-
-
-
-
-
-
 
 
 

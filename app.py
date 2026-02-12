@@ -8759,6 +8759,7 @@ def settings():
                     <div class="settings-content p-4">
                         <div class="tab-content" id="settingsTabContent">
                             <!-- Profile Tab -->
+                            <!-- Profile Tab -->
                             <div class="tab-pane fade show active" id="profile">
                                 <div class="settings-header">
                                     <div class="d-flex align-items-center">
@@ -8777,12 +8778,12 @@ def settings():
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Full Name</label>
                                             <input type="text" class="form-control" name="name" 
-                                                   value="''' + (user['name'] if user else '') + '''" required>
+                                                   value="''' + (user.get('name', '') if user else '') + '''" required>
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Email Address</label>
                                             <input type="email" class="form-control" name="email" 
-                                                   value="''' + (user['email'] if user else '') + '''" required>
+                                                   value="''' + (user.get('email', '') if user else '') + '''" required>
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Phone Number</label>
@@ -8792,7 +8793,7 @@ def settings():
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Department</label>
                                             <input type="text" class="form-control" name="department" 
-                                                   value="''' + (user['department'] if user and user['department'] else '') + '''">
+                                                   value="''' + (user.get('department', '') if user else '') + '''">
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">Role</label>
@@ -8800,7 +8801,7 @@ def settings():
                                         </div>
                                         <div class="col-md-6 mb-3">
                                             <label class="form-label">User ID</label>
-                                            <input type="text" class="form-control" value="''' + (str(user['id']) if user else '') + '''" readonly>
+                                            <input type="text" class="form-control" value="''' + (str(user.get('id', '')) if user else '') + '''" readonly>
                                         </div>
                                     </div>
                                     <button type="submit" class="btn btn-primary">
@@ -18398,6 +18399,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

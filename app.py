@@ -9278,13 +9278,14 @@ def update_profile():
     department = request.form.get('department')
     
     try:
-        cursor = mysql.connection.cursor()
+        # mysql is already a connection object
+        cursor = mysql.cursor()  # Remove .connection
         cursor.execute("""
             UPDATE users 
             SET name = %s, email = %s, phone = %s, department = %s 
             WHERE id = %s
         """, (name, email, phone, department, user_id))
-        mysql.connection.commit()
+        mysql.commit()  # Remove .connection
         cursor.close()
         
         # Update session data
@@ -18390,6 +18391,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 

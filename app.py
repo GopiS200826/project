@@ -47,6 +47,12 @@ MYSQL_USER = 'root'
 MYSQL_PASSWORD = 'YNLFYHPfhtFrgqZzOMwevwhOnKiDyLxJ'
 MYSQL_DB = 'railway'
 
+mysql = pymysql.connect(
+    host="mysql-cm74.railway.internal",
+    user="root",
+    password="YNLFYHPfhtFrgqZzOMwevwhOnKiDyLxJ",
+    database="railway"
+)
 
 # Email Configuration
 EMAIL_HOST = 'smtp.gmail.com'
@@ -18391,6 +18397,7 @@ if __name__ == '__main__':
     print(f"Super Admin Password: {SUPER_ADMIN_PASSWORD}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
 
